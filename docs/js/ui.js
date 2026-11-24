@@ -11,7 +11,8 @@
   const U = {
     hl: { sel: -1, src: -1, targets: new Set(), kind: null, arrow: null, regionHi: -1 },
     aiToken: 0, running: false, busy: false, battle: null, dice: 3, world: null, staticCanvas: null,
-    settings: Object.assign({ speed: 'normal', sound: true, life: true }, JSON.parse(store.get(SET_KEY) || '{}')),
+    settings: Object.assign({ speed: 'normal', sound: true, life: true, vol: { music: 0.55, sfx: 0.8 } }, JSON.parse(store.get(SET_KEY) || '{}')),
+    hist: [], regPrev: null,
   };
   const SPEED = { slow: 1.6, normal: 1, fast: 0.42, instant: 0 };
   const spd = ms => ms * (SPEED[U.settings.speed] ?? 1);
@@ -68,6 +69,9 @@
     const artwork = G.MATERIALS.load();
     const bar = $('#loadbar'), msg = $('#loadmsg');
     const prog = (v, m) => { bar.style.width = Math.round(v * 100) + '%'; if (m) msg.textContent = m; };
+    const TIPS = ['Hold a whole region and its bonus armies arrive every turn.', 'The defender wins ties: attack with numbers, not with hope.', 'Conquer at least one territory each turn to draw a card.', 'Card sets grow in value with every trade-in. Time them well.', 'A single army cannot attack. Leave no border thinly held.', 'Blitz fights to the end. Retreat while you still can.'];
+    const tipEl = $('#loadtip'); let tipI = (Math.random() * TIPS.length) | 0; if (tipEl) tipEl.textContent = TIPS[tipI];
+    const tipTimer = setInterval(() => { if (tipEl) tipEl.textContent = TIPS[++tipI % TIPS.length]; }, 2600);
     try { await Promise.race([Promise.all([document.fonts.load('italic 16px "IM Fell English"'), document.fonts.load('700 16px Cinzel'), document.fonts.load('16px "Uncial Antiqua"')]), sleep(2500)]); } catch (e) {}
     const world = await G.MAPGEN.generate(prog);
     G.ATLAS.prepare(world);
@@ -84,6 +88,7 @@
     if (!G.MATERIALS.territory($('#decoR'), { biome: 'forest' })) G.ATLAS.sketch($('#decoR'), 'tree');
     bindUI();
     prog(1, '');
+    clearInterval(tipTimer);
     $('#screen-loading').hidden = true;
     showMenu();
     netBoot();
@@ -105,8 +110,7 @@
   function showMenu() {
     U.aiToken++; U.running = false;
     hideBattle(); closeModal();
-    const bg = $('#menubg'); bg.width = U.staticCanvas.width / 2; bg.height = U.staticCanvas.height / 2;
-    bg.getContext('2d').drawImage(U.staticCanvas, 0, 0, bg.width, bg.height);
+    menuFx(); SFX.tension(0); stopFireworks();
     const cfg = Object.assign({ mode: 'classic', deal: 'random', fortify: 'adjacent', cardMode: 'progressive', neutral: true, seats: ['human', 'normal', 'normal', 'off', 'normal'] }, JSON.parse(store.get('eldmar.menu') || '{}'));
     const hasSave = !!store.get(SAVE_KEY);
     const hosting = NET.savedHosting(), lastRoom = NET.lastRoom();
@@ -189,19 +193,21 @@
   function startGame(cfg) {
     U.aiToken++; U.running = false; U.busy = false; U.lastBanner = null;
     U.suppressTurn = true; GM.newGame(cfg); U.suppressTurn = false;
-    $('#screen-menu').hidden = true;
+    U.hist = []; U.regPrev = null;
+    $('#screen-menu').hidden = true; enterHUD();
     clearSel(); VW().resize && VW().resize(); VW().fit && VW().fit();
     refresh(true);
-    SFX.ambient(true);
+    SFX.ambient(true); startMusic();
     openingRoll();
   }
   function continueGame() {
     const raw = store.get(SAVE_KEY); if (!raw) return;
     try { GM.restore(raw); } catch (e) { store.del(SAVE_KEY); showMenu(); return; }
     U.aiToken++; U.running = false; U.busy = false;
-    $('#screen-menu').hidden = true;
+    U.hist = []; U.regPrev = null;
+    $('#screen-menu').hidden = true; enterHUD();
     clearSel(); VW().resize && VW().resize();
-    refresh(true); SFX.ambient(true);
+    refresh(true); SFX.ambient(true); startMusic();
     toast('Game restored.');
     beginHumanOrAI(true);
   }
@@ -213,7 +219,7 @@
     const rounds = S.startRolls;
     const body = document.createElement('div');
     body.innerHTML = `<div class="rolls" id="rollList"></div><p class="hint" id="rollMsg" style="text-align:center;margin-top:12px">Each realm rolls one die. The highest roll goes first.</p>`;
-    showModal({ title: 'Roll for the first turn', sub: 'As the old rules demand', body, buttons: [{ label: 'To war!', cls: 'gold', id: 'rollGo', disabled: true, onClick: () => { closeModal(); beginHumanOrAI(true); } }] });
+    showModal({ title: 'Roll for the first turn', sub: 'As the old rules demand', body, buttons: [{ label: 'To war!', cls: 'gold', id: 'rollGo', disabled: true, onClick: () => { closeModal(); openWar(); } }] });
     const list = body.querySelector('#rollList');
     for (let r = 0; r < rounds.length; r++) {
       list.innerHTML = rounds[r].map(x => { const p = S.players[x.p]; return `<div class="rollrow" data-p="${x.p}">${shieldSVG(p, '')}<div><b style="font-family:var(--f-display)">${p.fname}</b><div class="hint">${p.isAI ? 'Computer player' : 'Human'}</div></div><div class="dice" style="perspective:400px">${dieHTML('def')}</div></div>`; }).join('');
@@ -229,8 +235,24 @@
     const first = S.players[S.first];
     body.querySelector('#rollMsg').innerHTML = `<b style="color:var(--gold-hi);font-family:var(--f-display);font-style:normal">${first.fname}</b> ${S.phase === 'claim' ? 'claim the first territory.' : 'take the first turn.'}`;
     const go = $('#rollGo'); if (go) go.disabled = false;
-    if (S.players.every(p => p.isAI || p.neutral)) { await sleep(900); closeModal(); beginHumanOrAI(true); }
+    if (S.players.every(p => p.isAI || p.neutral)) { await sleep(900); closeModal(); openWar(); }
   }
+  // the opening shot: letterbox, title and a slow pull-back over the map
+  async function openWar() {
+    const tok = U.aiToken, S = GM.S;
+    if (U.settings.speed !== 'instant' && G.BOARD.life) {
+      const c = $('#cine');
+      c.innerHTML = `<i class="cb t"></i><i class="cb b"></i><div class="cshade"></div><div class="ct"><small>MIDDLE-EARTH</small><b>The War of the Realms</b><span>${S.players.filter(p => !p.neutral).length} realms. One crown.</span></div>`;
+      c.hidden = false; void c.offsetWidth; c.classList.add('in');
+      SFX.horn(); SFX.whoosh();
+      const ms = VW().intro(3400);
+      await sleep(ms - 700); c.classList.remove('in'); await sleep(750); c.hidden = true; c.innerHTML = '';
+      if (tok !== U.aiToken) return;
+    }
+    beginHumanOrAI(true);
+  }
+  function enterHUD() { const a = $('#app'); a.classList.remove('enter'); void a.offsetWidth; a.classList.add('enter'); setTimeout(() => a.classList.remove('enter'), 1600); }
+  function startMusic() { SFX.wantMusic = true; if (U.settings.sound) SFX.music(true); }
 
   /* ---------------- flow ---------------- */
   function humans() { return GM.S.players.filter(p => !p.isAI && !p.neutral); }
@@ -290,7 +312,7 @@
       async trade(pi, r) { const p = GM.S.players[pi]; toast(`${p.fname} trade cards for <b>${r.value}</b> armies.`); SFX.card(); if (r.bonusT >= 0) VW().floatText(r.bonusT, '+2', '#ffe08a'); await wait(550); },
       async place(t, n) { if (!fastMode() || SPEED[U.settings.speed] > 0) { VW().ring(t, '#ffe08a'); VW().floatText(t, '+' + n, '#ffe08a'); } SFX.thud(); await wait(300); },
       async beginAttack(a, e) {
-        if (U.settings.speed !== 'instant') { setHL({ src: a, sel: -1, arrow: { a, b: e, kind: 'attack' }, targets: new Set([e]), kind: 'attack' }); VW().ensureVisible([a, e]); showBattle(a, e, true); }
+        if (U.settings.speed !== 'instant') { setHL({ src: a, sel: -1, arrow: { a, b: e, kind: 'attack' }, targets: new Set([e]), kind: 'attack' }); showBattle(a, e, true); VW().ensureVisible([a, e], $('#battle').offsetHeight + 30); }
         await wait(500);
       },
       async battle(res) { if (U.settings.speed === 'instant') { if (res.conquered) VW().flash(res.b, curP().light); return; } await animateBattle(res, fastMode()); },
@@ -303,7 +325,8 @@
     const S = GM.S, p = curP();
     clearSel();
     banner(p, `Round ${S.round}`);
-    SFX.horn();
+    SFX.horn(); SFX.tension(0.25);
+    recordHistory();
     save();
     if (!p.isAI && humans().length > 1 && !fromRestore && !NET.on()) {
       showModal({ title: `${p.fname}: your turn`, sub: 'Pass the device. Your cards and mission stay hidden until you press the button.', body: `<div style="display:grid;place-items:center">${shieldSVG(p, '').replace('<svg', '<svg style="width:90px;height:106px"')}</div>`, buttons: [{ label: 'Start my turn', cls: 'gold', onClick: () => { closeModal(); refresh(); if (GM.mustTrade()) openCards(true); } }], locked: true });
@@ -358,12 +381,17 @@
     const tip = $('#tooltip'); const S = GM.S;
     if (t < 0 || !ev || !S) { tip.hidden = true; return; }
     const T = D.TERR[t], o = S.owner[t], p = o >= 0 ? S.players[o] : null;
-    let extra = '';
+    let extra = '', pct = -1;
     if (S.phase === 'attack' && U.hl.src >= 0 && U.hl.targets.has(t) && U.hl.kind === 'attack') {
-      const pr = AI.winP(S.armies[U.hl.src] - 1, S.armies[t]);
-      extra = `<div style="margin-top:4px;color:var(--gold-hi)">Chance to conquer: <b>${Math.round(pr * 100)}%</b></div>`;
+      pct = Math.round(AI.winP(S.armies[U.hl.src] - 1, S.armies[t]) * 100);
+      extra = `<div class="tp-odds"><div class="tp-r"><span>Chance to conquer</span><b>${pct}%</b></div><div class="ob"><i style="width:${pct}%;background-position:${-(100 - pct) * 0.6}px 0"></i></div></div>`;
     }
-    tip.innerHTML = `<b>${esc(T.name)}</b><br><i>${D.REGIONS[T.region].name} · +${D.REGIONS[T.region].bonus}</i><br>${p ? `<span style="color:${p.light}">■</span> ${esc(p.fname)} · ${S.armies[t]} ${S.armies[t] === 1 ? 'army' : 'armies'}` : 'Unclaimed'}${extra}`;
+    const key = [t, o, S.armies[t], pct].join(':');
+    if (tip.dataset.k !== key) {
+      tip.dataset.k = key; tip.style.setProperty('--fc', p ? p.color + '77' : 'transparent');
+      tip.innerHTML = `<div class="tp-h">${p ? shieldSVG(p, '') : ''}<div><b>${esc(T.name)}</b><i>${D.REGIONS[T.region].name} · +${D.REGIONS[T.region].bonus}</i></div></div>
+        <div class="tp-b"><div class="tp-r"><span>${p ? esc(p.fname) : 'Unclaimed'}</span><b>${S.armies[t]} ${S.armies[t] === 1 ? 'army' : 'armies'}</b></div>${extra}</div>`;
+    }
     const r = $('#mapwrap').getBoundingClientRect();
     let x = ev.clientX - r.left + 16, y = ev.clientY - r.top + 16;
     tip.hidden = false;
@@ -377,25 +405,31 @@
     setHL({ src: a, sel: b, arrow: { a, b, kind: 'attack' }, targets: new Set(D.TERR[a].adj.filter(x => GM.S.owner[x] !== GM.S.current)), kind: 'attack' });
     U.dice = Math.min(3, GM.S.armies[a] - 1);
     showBattle(a, b, false); refresh();
+    VW().ensureVisible([a, b], $('#battle').offsetHeight + 30);
   }
   function showBattle(a, b, ai) {
     const S = GM.S; U.battle = { a, b, ai };
     const A = S.players[S.owner[a]], B = S.players[S.owner[b]];
     const box = $('#battle');
+    const reopen = !box.hidden;
+    box.style.cssText = `--ac:${A.dark};--acl:${A.color};--dc:${B.dark};--dcl:${B.color}`;
     box.innerHTML = `
+      <div class="bt-head">Battle for <b>${esc(D.TERR[b].name)}</b></div>
       <div class="bt-grid">
-        <div class="bt-side att">${shieldSVG(A)}<div style="min-width:0"><div class="tn">${esc(D.TERR[a].name)}</div><div class="fn">${esc(A.fname)}</div></div><span class="cnt" id="bA">${S.armies[a]}</span></div>
+        <div class="bt-side att" style="--fcA:${A.color}55">${shieldSVG(A)}<div style="min-width:0"><div class="role">Attacker</div><div class="tn">${esc(D.TERR[a].name)}</div><div class="fn">${esc(A.fname)}</div></div><span class="cnt" id="bA">${S.armies[a]}</span></div>
         <div class="bt-mid"><div class="dice" id="dA"></div><div class="vs">VS</div><div class="dice" id="dD"></div></div>
-        <div class="bt-side def">${shieldSVG(B)}<div style="min-width:0"><div class="tn">${esc(D.TERR[b].name)}</div><div class="fn">${esc(B.fname)}</div></div><span class="cnt" id="bD">${S.armies[b]}</span></div>
+        <div class="bt-side def" style="--fcA:${B.color}55">${shieldSVG(B)}<div style="min-width:0"><div class="role">Defender</div><div class="tn">${esc(D.TERR[b].name)}</div><div class="fn">${esc(B.fname)}</div></div><span class="cnt" id="bD">${S.armies[b]}</span></div>
       </div>
+      <div class="bt-oddsbar"><i id="bBar" style="width:50%"></i><span id="bBarT"></span></div>
       <div class="bt-odds" id="bOdds"></div>
       ${ai ? '' : `<div class="bt-actions">
         <span class="dsel-label">Dice</span><div class="dsel" id="dsel">${[1, 2, 3].map(n => `<button data-n="${n}">${n}</button>`).join('')}</div>
-        <button class="btn red" id="bAtk">${ICON.swords}Attack</button>
-        <button class="btn" id="bBlitz">${ICON.dice}Blitz</button>
-        <button class="btn sm" id="bRet">Retreat</button>
+        <button class="btn red" id="bAtk">${ICON.swords}Attack<kbd>Space</kbd></button>
+        <button class="btn" id="bBlitz">${ICON.dice}Blitz<kbd>B</kbd></button>
+        <button class="btn sm" id="bRet">Retreat<kbd>R</kbd></button>
       </div>`}`;
-    box.hidden = false;
+    if (reopen) box.style.animation = 'none';
+    box.hidden = false; SFX.tension(0.85); VW().setPad(box.offsetHeight + 28);
     fillDice(Math.min(3, S.armies[a] - 1), Math.min(2, S.armies[b]));
     updateBattleUI();
     if (!ai) {
@@ -416,32 +450,44 @@
     if (U.dice > maxD) U.dice = Math.max(1, maxD);
     $('#bA').textContent = S.armies[a]; $('#bD').textContent = S.armies[b];
     const pr = AI.winP(S.armies[a] - 1, S.armies[b]);
-    $('#bOdds').innerHTML = S.owner[b] === S.owner[a] ? '' : `Blitz: <b>${Math.round(pr * 100)}%</b> to conquer · defender rolls ${Math.min(2, S.armies[b])} ${S.armies[b] >= 2 ? 'dice' : 'die'}`;
+    const same = S.owner[b] === S.owner[a], pc = same ? 100 : Math.round(pr * 100);
+    const bar = $('#bBar'); if (bar) { bar.style.width = pc + '%'; $('#bBarT').innerHTML = same ? 'Conquered' : `<b>${pc}%</b>to conquer`; }
+    $('#bOdds').innerHTML = same ? '' : `You roll up to ${Math.max(1, maxD)} · the defender rolls ${Math.min(2, S.armies[b])} ${S.armies[b] >= 2 ? 'dice' : 'die'} and wins ties`;
     document.querySelectorAll('#dsel button').forEach(btn => { const n = +btn.dataset.n; btn.disabled = n > maxD; btn.classList.toggle('on', n === U.dice); });
     const can = GM.canAttack(a, b);
     ['#bAtk', '#bBlitz'].forEach(s => { const e = $(s); if (e) e.disabled = !can || U.busy; });
   }
-  function hideBattle() { const b = $('#battle'); if (b) { b.hidden = true; b.innerHTML = ''; } U.battle = null; }
+  function hideBattle() { const b = $('#battle'); if (b) { b.hidden = true; b.innerHTML = ''; } VW() && VW().setPad && VW().setPad(0); if (U.battle) SFX.tension(GM.S && GM.S.phase === 'attack' ? 0.5 : 0.25); U.battle = null; }
+  function lossTag(side, n) { const e = document.querySelector('#battle .bt-side.' + side); if (!e || !n) return; const l = document.createElement('span'); l.className = 'loss'; l.textContent = '−' + n; e.appendChild(l); setTimeout(() => l.remove(), 1000); }
 
   async function animateBattle(res, fast) {
     if (!U.battle) showBattle(res.a, res.b, true);
     fillDice(res.A.length, res.D.length);
     const wa = [...document.querySelectorAll('#dA .diewrap')], wd = [...document.querySelectorAll('#dD .diewrap')];
     SFX.dice(res.A.length + res.D.length);
+    [...wa, ...wd].forEach(w => { w.classList.remove('roll', 'fast'); void w.offsetWidth; w.classList.add('roll'); if (fast) w.classList.add('fast'); });
     res.A.forEach((v, i) => wa[i] && setDie(wa[i], v, fast));
     res.D.forEach((v, i) => wd[i] && setDie(wd[i], v, fast));
+    // arrows cross the border while the dice are in the air
+    const PA = GM.S.players[res.attacker], PD = GM.S.players[res.defender];
+    VW().volley(res.a, res.b, res.A.length * 3, PA.light, fast ? 0 : 260); VW().volley(res.b, res.a, res.D.length * 2, PD ? PD.light : '#ddd', fast ? 60 : 380);
+    if (!fast) setTimeout(() => SFX.arrows(3), 260);
     await sleep(fast ? 480 : 1050);
     res.pairs.forEach((win, i) => { if (wa[i]) wa[i].classList.add(win ? 'won' : 'lost'); if (wd[i]) wd[i].classList.add(win ? 'lost' : 'won'); });
     const bA = $('#bA'), bD = $('#bD');
     const S = GM.S;
     if (bA) { bA.textContent = S.armies[res.a]; if (res.al) { bA.classList.remove('hit'); void bA.offsetWidth; bA.classList.add('hit'); } }
     if (bD) { bD.textContent = res.conquered ? 0 : S.armies[res.b]; if (res.dl) { bD.classList.remove('hit'); void bD.offsetWidth; bD.classList.add('hit'); } }
-    if (res.al) VW().floatText(res.a, '−' + res.al, '#ff8a72');
-    if (res.dl) VW().floatText(res.b, '−' + res.dl, '#ff8a72');
-    if (res.conquered) { const p = S.players[res.attacker]; VW().flash(res.b, p.light); VW().burst(res.b, p.light); VW().shake && VW().shake(); SFX.conquer(); if (res.eliminated) { toast(`The <b>${S.players[res.defender].fname}</b> have been wiped out.`); } }
-    else SFX.clash();
+    if (res.al) { VW().floatText(res.a, '−' + res.al, '#ff8a72'); VW().impact(res.a, '#ffb070'); lossTag('att', res.al); }
+    if (res.dl) { VW().floatText(res.b, '−' + res.dl, '#ff8a72'); VW().impact(res.b, '#ffb070'); lossTag('def', res.dl); }
+    if (res.conquered) {
+      const p = S.players[res.attacker]; VW().conquest(res.b, p); SFX.conquer();
+      const box = $('#battle'); if (box && !box.hidden) { const st = document.createElement('div'); st.className = 'bt-stamp'; st.textContent = 'Conquered'; box.appendChild(st); setTimeout(() => SFX.stamp(), 120); }
+      if (res.eliminated) { toast(`The <b>${S.players[res.defender].fname}</b> have been wiped out.`); }
+    }
+    else { SFX.clash(); if (res.al && !res.dl) VW().shake(180, 3); }
     refresh();
-    await sleep(fast ? 260 : 520);
+    await sleep(fast ? (res.conquered ? 520 : 260) : (res.conquered ? 900 : 520));
   }
 
   async function humanAttack(blitz) {
@@ -546,7 +592,21 @@
     $('#objText').innerHTML = objectiveText(viewer);
     VW().invalidate && VW().invalidate();
     if (U.battle && !U.battle.ai) updateBattleUI();
+    watchRegions();
   }
+  // a realm that completes a region gets a fanfare, a golden sweep over the land and a line in the feed
+  function watchRegions() {
+    const S = GM.S; const now = D.REGIONS.map(r => GM.regionOwner(r.id));
+    const prev = U.regPrev; U.regPrev = now;
+    if (!prev || S.phase === 'claim' || S.phase === 'place' || S.phase === 'setup') return;
+    let n = 0;
+    now.forEach((o, r) => {
+      if (o === prev[r] || o < 0 || n > 1) return; const p = S.players[o]; if (!p || p.neutral) return; n++;
+      VW().regionFx(r, p.light); SFX.region();
+      toast(`<b>${esc(D.REGIONS[r].name)}</b> is held by the ${esc(p.fname)}: <b>+${D.REGIONS[r].bonus}</b> armies every turn.`);
+    });
+  }
+  function recordHistory() { const S = GM.S; if (!S) return; U.hist.push({ r: S.round, c: S.players.map(p => GM.countTerr(p.idx)) }); if (U.hist.length > 400) U.hist.shift(); }
   function viewerPlayer() {
     if (NET.on()) return GM.S.players.find(q => q.cid === NET.cid) || null;
     const S = GM.S; const hs = humans();
@@ -565,16 +625,33 @@
     return 'Conquer all of Middle-earth: eliminate every rival realm.';
   }
 
+  let facKey = '';
   function renderFactions() {
-    const S = GM.S;
-    $('#factions').innerHTML = S.players.map(p => {
-      const nt = GM.countTerr(p.idx), na = GM.countArmies(p.idx);
-      const who = p.neutral ? 'Neutral army' : p.isAI ? ({ easy: 'AI · Recruit', normal: 'AI · Captain', hard: 'AI · Warlord' }[p.diff]) : (p.pname ? esc(p.pname) + (p.cid === NET.cid && NET.on() ? ' · you' : '') : 'Human');
-      return `<div class="fac ${S.current === p.idx && S.phase !== 'over' ? 'cur' : ''} ${p.alive ? '' : 'dead'}">${shieldSVG(p)}<div style="min-width:0">
+    const S = GM.S, box = $('#factions');
+    const key = S.players.map(p => p.faction + '/' + p.idx).join(',');
+    if (key !== facKey || box.children.length !== S.players.length) {
+      facKey = key;
+      box.innerHTML = S.players.map(p => `<div class="fac" style="--fc:${p.color};--fl:${p.light}">${shieldSVG(p)}<div style="min-width:0">
         <div class="nm"><span class="sw" style="background:${p.color}"></span>${esc(p.short === 'Neutral' ? 'Neutrals' : p.short)}</div>
-        <div class="who">${p.alive ? who : 'Wiped out'}</div>
-        <div class="nums"><span title="Armies">${ICON.troops}${na}</span><span title="Territories">${ICON.flag}${nt}</span>${p.neutral ? '' : `<span title="Cards">${ICON.cards}${p.cards.length}</span>`}</div></div></div>`;
-    }).join('');
+        <div class="who"></div>
+        <div class="nums"><span title="Armies">${ICON.troops}<em></em></span><span title="Territories">${ICON.flag}<em></em></span>${p.neutral ? '' : `<span title="Cards">${ICON.cards}<em></em></span>`}</div>
+        <div class="pw" title="Share of Middle-earth"><i></i></div></div></div>`).join('');
+    }
+    S.players.forEach((p, i) => {
+      const el = box.children[i]; if (!el) return;
+      const nt = GM.countTerr(p.idx), na = GM.countArmies(p.idx), cur = S.current === p.idx && S.phase !== 'over';
+      let who = p.neutral ? 'Neutral army' : p.isAI ? ({ easy: 'AI · Recruit', normal: 'AI · Captain', hard: 'AI · Warlord' }[p.diff]) : (p.pname ? esc(p.pname) + (p.cid === NET.cid && NET.on() ? ' · you' : '') : 'Human');
+      if (!p.alive) who = 'Wiped out'; else if (cur && !isHumanTurn()) who += '<span class="think"><i></i><i></i><i></i></span>';
+      el.classList.toggle('cur', cur); el.classList.toggle('dead', !p.alive);
+      const w = el.querySelector('.who'); if (w.dataset.h !== who) { w.dataset.h = who; w.innerHTML = who; }
+      const vals = p.neutral ? [na, nt] : [na, nt, p.cards.length];
+      el.querySelectorAll('.nums em').forEach((em, k) => {
+        const v = String(vals[k]); if (em.textContent === v) return;
+        const old = em.textContent; em.textContent = v;
+        if (old !== '') { const sp = em.parentElement; sp.classList.remove('up', 'down'); void sp.offsetWidth; sp.classList.add(+v > +old ? 'up' : 'down'); }
+      });
+      el.querySelector('.pw i').style.width = (nt / NT * 100).toFixed(1) + '%';
+    });
   }
 
   function renderFooter() {
@@ -587,7 +664,7 @@
     let st = '', label = 'End turn', dis = false;
     const human = isHumanTurn();
     if (ph === 'over') { st = 'The war is over.'; label = 'New game'; }
-    else if (!human) { st = `The <b>${esc(p.fname)}</b> are moving their armies…`; label = 'Rival turn'; dis = true; }
+    else if (!human) { st = `The <b>${esc(p.fname)}</b> are moving their armies<span class="think"><i></i><i></i><i></i></span>`; label = 'Rival turn'; dis = true; }
     else if (ph === 'claim') { st = `<b>${esc(p.short)}</b>: claim a free territory on the map.`; label = 'Pick for me'; }
     else if (ph === 'place') { st = `<b>${esc(p.short)}</b>: place 1 army on one of your territories. <b>${S.setupPool[S.current]}</b> left.`; label = 'Place the rest'; }
     else if (ph === 'reinforce') {
@@ -597,12 +674,28 @@
     }
     else if (ph === 'attack') { st = S.pending ? 'Choose how many armies occupy the territory.' : U.hl.src >= 0 ? `Attacking from <b>${esc(D.TERR[U.hl.src].name)}</b>: pick an enemy neighbour.` : 'Pick one of your territories with 2+ armies, then an enemy neighbour.'; label = 'End attack'; dis = !!S.pending; }
     else if (ph === 'fortify') { st = S.cfg.fortify === 'connected' ? 'Optional fortify: move armies once between connected territories.' : 'Optional fortify: move armies once to an adjacent territory.'; label = 'End turn'; }
-    $('#status').innerHTML = st; lab.textContent = label; btn.disabled = dis;
+    const stEl = $('#status'); if (stEl.dataset.h !== st) { stEl.dataset.h = st; stEl.innerHTML = st; }
+    lab.textContent = label; btn.disabled = dis;
+    // the gold button asks for attention when nothing else is required of the player
+    const idle = human && !U.battle && ((ph === 'reinforce' && !GM.mustTrade() && S.reinforcements === 0) || ph === 'fortify' || ph === 'over');
+    btn.classList.toggle('pulse', !!idle || ph === 'over');
+    // armies still to place, shown over the map
+    const pool = $('#pool'); const left = !human ? 0 : ph === 'reinforce' && !GM.mustTrade() ? S.reinforcements : ph === 'place' ? S.setupPool[S.current] : 0;
+    if (left > 0) { const b = pool.querySelector('b'); if (b.textContent !== String(left)) { b.textContent = left; b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump'); } pool.querySelector('span').textContent = left === 1 ? 'army to place' : 'armies to place'; pool.hidden = false; } else pool.hidden = true;
+    // which of my territories can act right now
+    const act = new Set();
+    if (human && !U.busy && U.hl.src < 0 && !S.pending) {
+      const me = S.current;
+      if (ph === 'attack') { for (let t = 0; t < NT; t++) if (S.owner[t] === me && S.armies[t] >= 2 && D.TERR[t].adj.some(b => S.owner[b] !== me)) act.add(t); }
+      else if (ph === 'fortify' && !S.fortified) { for (let t = 0; t < NT; t++) if (S.owner[t] === me && S.armies[t] >= 2 && GM.fortifyTargets(t).length) act.add(t); }
+    }
+    VW().actionable = act;
   }
 
   function renderDossier() {
     const S = GM.S; const box = $('#dossier'); const t = U.hl.sel >= 0 ? U.hl.sel : U.hl.src;
     const p = curP(); const human = isHumanTurn();
+    const dk = t + '/' + (t < 0 ? S.phase : ''); box.classList.toggle('still', box.dataset.k === dk); box.dataset.k = dk;
     if (t < 0) {
       $('#rtitle').textContent = 'War council';
       let html = '';
@@ -698,7 +791,7 @@
     const S = GM.S; const viewer = viewerPlayer();
     if (!viewer) { showModal({ title: 'Cards', sub: 'Rival realms keep their cards hidden.', body: '', buttons: [{ label: 'Close', onClick: closeModal }] }); return; }
     const canTrade = isHumanTurn() && viewer === curP() && S.phase === 'reinforce';
-    const selIdx = new Set();
+    const selIdx = new Set(); let dealt = false;
     const body = document.createElement('div');
     const render = () => {
       const val = S.cfg.cardMode === 'fixed' ? 'depends on the set (4/6/8/10)' : `<b style="color:var(--gold-hi)">${GM.nextTradeValue()}</b> armies`;
@@ -708,6 +801,7 @@
         const t = +canvas.dataset.territory;
         G.VIGNETTE.paint(canvas, D.TERR[t < 0 ? 29 : t]);
       });
+      const hand = body.querySelector('.hand'); if (hand) hand.classList.toggle('still', dealt); dealt = true;
       body.querySelectorAll('.tcard').forEach(c => c.onclick = () => { const i = +c.dataset.i; if (selIdx.has(i)) selIdx.delete(i); else if (selIdx.size < 3) selIdx.add(i); render(); upd(); });
     };
     const upd = () => {
@@ -774,19 +868,30 @@
       <h3>Victory</h3><ul>
         <li>Classic: eliminate every rival realm. Missions: complete your secret objective. Quick: 26 territories, or the most when round 12 ends.</li></ul>
       <h3>Controls</h3><ul>
-        <li>Drag to pan the map, scroll or pinch to zoom. In 3D, drag with the right button (or two fingers) to turn the camera.</li>
-        <li>Reinforce: click +1, Shift+click +5. Escape cancels the selection.</li></ul>`;
+        <li>Drag to pan the map, scroll or pinch to zoom, double-click to zoom in.</li>
+        <li>Reinforce: click +1, Shift+click +5. Escape cancels the selection.</li>
+        <li>Keyboard: Space is the main action (next step, or attack during a battle), B blitz, R retreat, 1–3 choose dice, C cards, O objectives, L chronicle, F whole map, M mute.</li></ul>`;
     showModal({ wide: true, title: 'Rules of war', sub: 'The classic conquest rules, no shortcuts', body, buttons: [{ label: 'Close', onClick: closeModal }] });
   }
   function openSystemMenu() {
-    const body = document.createElement('div');
-    body.innerHTML = `<div class="opts">
+    const v = U.settings.vol; const body = document.createElement('div');
+    body.innerHTML = `<div class="vols">
+        <div class="vol"><label for="s-mus">Music</label><input type="range" id="s-mus" min="0" max="100" value="${Math.round(v.music * 100)}"><output>${Math.round(v.music * 100)}</output></div>
+        <div class="vol"><label for="s-sfx">Effects</label><input type="range" id="s-sfx" min="0" max="100" value="${Math.round(v.sfx * 100)}"><output>${Math.round(v.sfx * 100)}</output></div>
+      </div>
+      <div class="opts">
       <div class="opt"><label for="s-speed">AI speed</label><select id="s-speed">${[['slow', 'Relaxed'], ['normal', 'Normal'], ['fast', 'Fast'], ['instant', 'Instant']].map(([k, l]) => `<option value="${k}" ${U.settings.speed === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-      <div class="opt"><label for="s-life">Clouds and map animations</label><select id="s-life"><option value="on" ${U.settings.life ? 'selected' : ''}>On</option><option value="off" ${U.settings.life ? '' : 'selected'}>Off</option></select></div></div>`;
-    showModal({ title: 'Menu', sub: 'The game saves automatically at the start of every turn', body, buttons: [
+      <div class="opt"><label for="s-life">Clouds and map animations</label><select id="s-life"><option value="on" ${U.settings.life ? 'selected' : ''}>On</option><option value="off" ${U.settings.life ? '' : 'selected'}>Off</option></select></div></div>
+      <div class="keys"><div><span>Main action</span><kbd>Space</kbd></div><div><span>Blitz · Retreat</span><span><kbd>B</kbd><kbd>R</kbd></span></div><div><span>Dice</span><span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></span></div><div><span>Cards · Objectives</span><span><kbd>C</kbd><kbd>O</kbd></span></div><div><span>Whole map · Zoom</span><span><kbd>F</kbd><kbd>+</kbd><kbd>−</kbd></span></div><div><span>Mute</span><kbd>M</kbd></div></div>`;
+    const apply = () => { U.settings.speed = $('#s-speed').value; U.settings.life = $('#s-life').value === 'on'; saveSettings(); applyLife(); };
+    const buttons = [
       { label: 'Quit to main menu', onClick: () => { closeModal(); SFX.ambient(false); leaveOnline(); showMenu(); } },
-      { label: 'Resume', cls: 'gold', onClick: () => { U.settings.speed = $('#s-speed').value; U.settings.life = $('#s-life').value === 'on'; saveSettings(); applyLife(); closeModal(); refresh(); } },
-    ] });
+      ...(document.documentElement.requestFullscreen ? [{ label: document.fullscreenElement ? 'Leave full screen' : 'Full screen', onClick: () => { try { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); } catch (e) {} apply(); closeModal(); } }] : []),
+      { label: 'Resume', cls: 'gold', onClick: () => { apply(); closeModal(); refresh(); } },
+    ];
+    showModal({ title: 'Menu', sub: 'The game saves automatically at the start of every turn', body, buttons });
+    const bindVol = (id, k) => { const e = $(id); e.oninput = () => { U.settings.vol[k] = e.value / 100; e.nextElementSibling.textContent = e.value; SFX.setVolume(U.settings.vol); saveSettings(); }; e.onchange = () => { if (k === 'sfx') SFX.coin(); }; };
+    bindVol('#s-mus', 'music'); bindVol('#s-sfx', 'sfx');
   }
 
   function onVictory(w) {
@@ -795,14 +900,80 @@
     setTimeout(() => {
       hideBattle(); SFX.victory();
       const reason = { domination: 'Every rival realm has fallen.', mission: `Secret mission accomplished: ${GM.missionText(p.mission, S.players)}`, quick: `They reached ${S.cfg.quickTarget} territories.`, time: 'When the rounds ran out, they held more territories than anyone.' }[w.reason] || '';
-      const rows = S.players.map(q => `<tr><td><span style="color:${q.color}">■</span> ${esc(q.fname)}</td><td>${GM.countTerr(q.idx)}</td><td>${q.stats.conquered}</td><td>${q.stats.killed}</td><td>${q.stats.died}</td><td>${q.stats.trades}</td></tr>`).join('');
-      const body = `<div style="display:grid;place-items:center;margin-bottom:10px">${shieldSVG(p, '').replace('<svg', '<svg style="width:110px;height:130px;filter:drop-shadow(0 0 24px rgba(246,210,120,.6))"')}</div>
+      const rows = S.players.map(q => `<tr class="${q.idx === p.idx ? 'win' : ''}"><td><span style="color:${q.color}">■</span> ${esc(q.fname)}</td><td>${GM.countTerr(q.idx)}</td><td>${q.stats.conquered}</td><td>${q.stats.killed}</td><td>${q.stats.died}</td><td>${q.stats.trades}</td></tr>`).join('');
+      recordHistory();
+      const body = `<div class="vic-shield">${shieldSVG(p, '')}</div>
         <p style="text-align:center;font-family:var(--f-map);font-size:18px;font-style:italic">${esc(reason)}</p>${ORN}
         <table class="st"><tr><th>Realm</th><th>Terr.</th><th>Conquests</th><th>Kills</th><th>Losses</th><th>Trade-ins</th></tr>${rows}</table>
+        ${powerGraph()}
         <p class="hint" style="text-align:center">${S.round} rounds · ${S.turn} turns</p>`;
-      showModal({ wide: true, title: `Victory for the ${p.fname}!`, sub: 'Middle-earth has a new sovereign', body, buttons: [{ label: 'Admire the map', onClick: closeModal }, { label: 'New game', cls: 'gold', onClick: () => { closeModal(); showMenu(); } }] });
+      showModal({ wide: true, title: `Victory for the ${p.fname}!`, sub: 'Middle-earth has a new sovereign', body, buttons: [{ label: 'Admire the map', onClick: () => { closeModal(); VW().fit(); } }, { label: 'New game', cls: 'gold', onClick: () => { closeModal(); showMenu(); } }] });
+      SFX.tension(0); fireworks([p.light, p.color, '#f6dc94', '#fff3d0']);
       refresh();
     }, 900);
+  }
+  // territories held by each realm, turn by turn
+  function powerGraph() {
+    const S = GM.S, h = U.hist; if (h.length < 4) return '';
+    const Wd = 600, Hd = 150, pad = 8, n = h.length, max = Math.max(8, ...h.map(x => Math.max(...x.c)));
+    const X = i => pad + i / (n - 1) * (Wd - pad * 2), Y = v => Hd - pad - v / max * (Hd - pad * 2);
+    const lines = S.players.map((q, pi) => `<polyline fill="none" stroke="${q.light}" stroke-width="${q.idx === S.winner.p ? 3 : 1.6}" stroke-linejoin="round" stroke-linecap="round" opacity="${q.idx === S.winner.p ? 1 : 0.75}" points="${h.map((x, i) => X(i).toFixed(1) + ',' + Y(x.c[pi] || 0).toFixed(1)).join(' ')}"/>`).join('');
+    const grid = [0.25, 0.5, 0.75].map(k => `<line x1="${pad}" x2="${Wd - pad}" y1="${(pad + k * (Hd - pad * 2)).toFixed(1)}" y2="${(pad + k * (Hd - pad * 2)).toFixed(1)}" stroke="#6d5430" stroke-width="0.6" stroke-dasharray="3 5"/>`).join('');
+    return `<svg class="graph" viewBox="0 0 ${Wd} ${Hd}" preserveAspectRatio="none" role="img" aria-label="Territories held by each realm over the war">${grid}${lines}</svg><div class="graph-cap">Territories held, turn by turn</div>`;
+  }
+
+  /* ---------------- particles: title embers and victory fireworks ---------------- */
+  let menuRAF = 0, fwRAF = 0;
+  function menuFx() {
+    const cv = $('#menubg'); if (!cv || menuRAF) return; const c = cv.getContext('2d');
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) { cv.width = cv.height = 1; return; }
+    const parts = []; let last = 0, w = 0, h = 0;
+    const spawn = any => ({ x: Math.random(), y: any ? Math.random() : 1.05, r: 0.6 + Math.random() * 2.2, vy: 0.018 + Math.random() * 0.05, vx: (Math.random() - 0.4) * 0.02, ph: Math.random() * 6.283, hot: Math.random() });
+    for (let i = 0; i < 90; i++) parts.push(spawn(true));
+    const step = tm => {
+      if ($('#screen-menu').hidden) { menuRAF = 0; c.clearRect(0, 0, w, h); return; }
+      menuRAF = requestAnimationFrame(step);
+      const dt = Math.min(0.05, last ? (tm - last) / 1000 : 0.016); last = tm;
+      const dpr = Math.min(devicePixelRatio || 1, 1.5), W2 = Math.round(innerWidth * dpr), H2 = Math.round(innerHeight * dpr);
+      if (W2 !== w || H2 !== h) { w = cv.width = W2; h = cv.height = H2; }
+      c.clearRect(0, 0, w, h); c.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < parts.length; i++) {
+        const q = parts[i]; q.y -= q.vy * dt; q.x += (q.vx + Math.sin(tm / 1400 + q.ph) * 0.012) * dt;
+        if (q.y < -0.05) { parts[i] = spawn(false); continue; }
+        const a = (0.25 + 0.5 * (0.5 + 0.5 * Math.sin(tm / 300 * (0.5 + q.hot) + q.ph))) * Math.min(1, q.y * 3), r = q.r * dpr;
+        const g = c.createRadialGradient(q.x * w, q.y * h, 0, q.x * w, q.y * h, r * 4);
+        g.addColorStop(0, `rgba(255,${190 + q.hot * 50 | 0},${110 + q.hot * 60 | 0},${a})`); g.addColorStop(1, 'rgba(255,140,60,0)');
+        c.fillStyle = g; c.beginPath(); c.arc(q.x * w, q.y * h, r * 4, 0, 7); c.fill();
+      }
+    };
+    menuRAF = requestAnimationFrame(step);
+  }
+  function stopFireworks() { cancelAnimationFrame(fwRAF); fwRAF = 0; const cv = $('#fxOverlay'); if (cv) cv.hidden = true; }
+  function fireworks(colors, ms = 11000) {
+    const cv = $('#fxOverlay'); if (!cv || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    stopFireworks(); cv.hidden = false; const c = cv.getContext('2d');
+    const dpr = Math.min(devicePixelRatio || 1, 1.5); const w = cv.width = Math.round(innerWidth * dpr), h = cv.height = Math.round(innerHeight * dpr);
+    const parts = []; let last = 0, nextShot = 0; const t0 = performance.now();
+    const shot = () => {
+      const x = (0.12 + Math.random() * 0.76) * w, y = (0.1 + Math.random() * 0.4) * h, col = colors[(Math.random() * colors.length) | 0], n = 46 + (Math.random() * 30 | 0), pw = (150 + Math.random() * 170) * dpr;
+      for (let i = 0; i < n; i++) { const a = Math.random() * 6.283, v = pw * (0.35 + Math.random() * 0.65); parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0, max: 1.1 + Math.random() * 0.9, col, r: (1 + Math.random() * 1.6) * dpr }); }
+      SFX.ui('back');
+    };
+    const step = tm => {
+      const el = tm - t0; if (el > ms && !parts.length) { stopFireworks(); return; }
+      fwRAF = requestAnimationFrame(step);
+      const dt = Math.min(0.05, last ? (tm - last) / 1000 : 0.016); last = tm;
+      if (el < ms && tm > nextShot) { shot(); nextShot = tm + 260 + Math.random() * 620; }
+      c.clearRect(0, 0, w, h); c.globalCompositeOperation = 'lighter'; c.lineCap = 'round';
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const q = parts[i]; q.life += dt; if (q.life > q.max) { parts.splice(i, 1); continue; }
+        const d = Math.exp(-dt * 1.9); q.vx *= d; q.vy = q.vy * d + 120 * dpr * dt; const ox = q.x, oy = q.y; q.x += q.vx * dt; q.y += q.vy * dt;
+        const k = q.life / q.max; c.globalAlpha = (1 - k) * (0.6 + 0.4 * Math.sin(q.life * 40 + i)); c.strokeStyle = q.col; c.lineWidth = q.r;
+        c.beginPath(); c.moveTo(ox - q.vx * 0.03, oy - q.vy * 0.03); c.lineTo(q.x, q.y); c.stroke();
+      }
+      c.globalAlpha = 1;
+    };
+    fwRAF = requestAnimationFrame(step);
   }
 
   /* ---------------- modal / toast / banner ---------------- */
@@ -812,16 +983,28 @@
     const mb = m.querySelector('.mbody'); if (typeof body === 'string') mb.innerHTML = body; else if (body) mb.appendChild(body);
     const acts = m.querySelector('.acts');
     (buttons || []).forEach(b => { const e = document.createElement('button'); e.className = 'btn ' + (b.cls || ''); e.textContent = b.label; if (b.id) e.id = b.id; if (b.disabled) e.disabled = true; e.onclick = b.onClick; acts.appendChild(e); });
+    if (m.hidden) SFX.page();
     m.hidden = false; m.dataset.locked = locked ? '1' : '';
+    m.querySelectorAll('input[type=range]').forEach(rangeFill);
     const first = acts.querySelector('.btn.gold:not(:disabled)') || acts.querySelector('.btn'); if (first) setTimeout(() => first.focus({ preventScroll: true }), 30);
   }
   function closeModal() { const m = $('#modal'); m.hidden = true; m.innerHTML = ''; }
+  function rangeFill(r) { const lo = +r.min || 0, hi = +r.max || 100; r.style.setProperty('--v', (hi > lo ? (r.value - lo) / (hi - lo) * 100 : 100) + '%'); }
   function toast(html) { const e = document.createElement('div'); e.className = 'toast'; e.innerHTML = html; $('#toast').appendChild(e); setTimeout(() => e.remove(), 3300); }
   function banner(p, sub) {
     const old = document.getElementById('banner'); if (old) old.remove();
-    const b = document.createElement('div'); b.id = 'banner';
-    b.innerHTML = `${shieldSVG(p, '')}<div class="t1">${esc(sub).toUpperCase()}</div><div class="t2">${esc(p.fname)}</div>`;
-    $('#mapwrap').appendChild(b); setTimeout(() => b.remove(), 2500);
+    const S = GM.S; const mine = !p.isAI && !p.neutral && (!NET.on() || p.cid === NET.cid);
+    const who = mine ? (S && humans().length > 1 && !NET.on() ? 'Take the table' : 'Your turn') : p.isAI ? ({ easy: 'Recruit', normal: 'Captain', hard: 'Warlord' }[p.diff] || 'Computer') + ' · computer' : esc(p.pname || 'Rival realm');
+    const b = document.createElement('div'); b.id = 'banner'; b.style.cssText = `--fc:${p.color};--fl:${p.light};--fd:${p.dark}ee`;
+    b.innerHTML = `<div class="bn-band"><i class="bn-sheen"></i>${shieldSVG(p, '')}<div class="bn-text"><div class="t1">${esc(sub).toUpperCase()}</div><div class="t2">${esc(p.fname)}</div><div class="t3">${who}</div></div></div>`;
+    $('#mapwrap').appendChild(b); setTimeout(() => b.remove(), 2700);
+  }
+  const PHASE_FX = { attack: ['Attack', 'Choose your battles', ICON.swords], fortify: ['Fortify', 'One last move', ICON.move], reinforce: ['Reinforce', 'Muster your armies', ICON.troops] };
+  function phaseFlash(ph) {
+    const d = PHASE_FX[ph]; if (!d) return;
+    const old = document.getElementById('phaseflash'); if (old) old.remove();
+    const e = document.createElement('div'); e.id = 'phaseflash'; e.innerHTML = `${d[2]}<div><b>${d[0].toUpperCase()}</b><span>${d[1]}</span></div>`;
+    $('#mapwrap').appendChild(e); setTimeout(() => e.remove(), 1500); SFX.whoosh();
   }
 
   /* ---------------- bindings ---------------- */
@@ -838,8 +1021,18 @@
       if (k === 'map') { closeModal(); return; }
       if (k === 'obj') openObjectives(); else if (k === 'cards') openCards(false); else if (k === 'log') openLog(); else if (k === 'rules') openRules();
     };
-    $('#btnSound').onclick = () => { U.settings.sound = !U.settings.sound; SFX.enabled = U.settings.sound; saveSettings(); $('#sndWaves').style.opacity = U.settings.sound ? 1 : 0.15; if (U.settings.sound) SFX.ambient(true); };
+    $('#btnSound').onclick = () => { U.settings.sound = !U.settings.sound; SFX.enabled = U.settings.sound; saveSettings(); $('#sndWaves').style.opacity = U.settings.sound ? 1 : 0.15; if (U.settings.sound) { if (GM.S && $('#screen-menu').hidden) SFX.ambient(true); if (SFX.wantMusic) SFX.music(true); } };
     SFX.enabled = U.settings.sound; $('#sndWaves').style.opacity = U.settings.sound ? 1 : 0.15;
+    if (!U.settings.vol || typeof U.settings.vol.music !== 'number') U.settings.vol = { music: 0.55, sfx: 0.8 };
+    SFX.setVolume(U.settings.vol);
+    // the score starts with the first touch (browsers keep audio locked until then)
+    const firstTouch = () => { document.removeEventListener('pointerdown', firstTouch, true); SFX.unlock(); startMusic(); };
+    document.addEventListener('pointerdown', firstTouch, true);
+    // interface sounds
+    const UI_SEL = '.btn, .tab, .iconbtn, .mode, .chip, .tcard, .dsel button, select';
+    document.addEventListener('pointerover', e => { const b = e.target.closest && e.target.closest(UI_SEL); if (b && !b.disabled && b !== U.lastHover && e.pointerType === 'mouse') { U.lastHover = b; SFX.ui('hover'); } if (!b) U.lastHover = null; });
+    document.addEventListener('click', e => { const b = e.target.closest && e.target.closest(UI_SEL); if (b && !b.disabled) SFX.ui(/Cancel|Close|Retreat|Leave/.test(b.textContent) ? 'back' : 'click'); }, true);
+    document.addEventListener('input', e => { if (e.target.type === 'range') rangeFill(e.target); });
     $('#btnMenu').onclick = () => { if (GM.S) openSystemMenu(); };
     const syncDrawers = () => {
       $('#btnLeft').setAttribute('aria-expanded', $('#left').classList.contains('open'));
@@ -856,13 +1049,26 @@
           $('#left').classList.remove('open'); $('#right').classList.remove('open'); syncDrawers(); return;
         }
         if (!U.busy) { hideBattle(); clearSel(); }
+        return;
       }
+      if (e.ctrlKey || e.metaKey || e.altKey || !GM.S || !$('#screen-menu').hidden || !$('#modal').hidden) return;
+      const tg = e.target; if (tg && /^(INPUT|SELECT|TEXTAREA)$/.test(tg.tagName)) return;
+      const k = e.key.toLowerCase(), inBattle = U.battle && !U.battle.ai;
+      if (k === ' ' || k === 'enter') { if (tg && tg.tagName === 'BUTTON') return; e.preventDefault(); if (inBattle) humanAttack(false); else onNext(); }
+      else if (inBattle && k === 'b') humanAttack(true);
+      else if (inBattle && k === 'r') { if (!U.busy) $('#bRet').click(); }
+      else if (inBattle && '123'.includes(k)) { const b = document.querySelector(`#dsel button[data-n="${k}"]`); if (b && !b.disabled) b.click(); }
+      else if (k === 'm') $('#btnSound').click();
+      else if (k === 'f') VW().fit();
+      else if (k === 'c') openCards(false); else if (k === 'o') openObjectives(); else if (k === 'l') openLog(); else if (k === 'h') openRules();
+      else if (k === '+' || k === '=') VW().zoomBy(1.35); else if (k === '-') VW().zoomBy(1 / 1.35);
     });
     GM.on('change', () => { refresh(); netLocalChange(); });
     GM.on('turnStart', () => { if (!U.suppressTurn) onTurnStart(false); });
     GM.on('victory', onVictory);
     GM.on('setupDone', () => { save(); });
-    GM.on('eliminated', ({ p, by }) => { const S = GM.S; toast(`The <b>${esc(S.players[by].fname)}</b> wipe out the ${esc(S.players[p].fname)}.`); });
+    GM.on('eliminated', ({ p, by }) => { const S = GM.S; toast(`The <b>${esc(S.players[by].fname)}</b> wipe out the ${esc(S.players[p].fname)}.`); SFX.eliminated(); VW().shake(700, 10); });
+    GM.on('phase', ({ phase }) => { SFX.tension(phase === 'attack' ? 0.5 : 0.25); if (isHumanTurn() && !netApplying) phaseFlash(phase); });
     GM.on('turnEnd', ({ p, card }) => { const S = GM.S; if (card && S.players[p].isAI) toast(`The ${esc(S.players[p].fname)} draw a card.`); });
   }
 
@@ -885,10 +1091,10 @@
     const old = S0 ? { owner: S0.owner.slice(), armies: S0.armies.slice(), turn: S0.turn, atk: S0.atkSeq || 0, winner: S0.winner } : null;
     netApplying = true; try { GM.restore(json); } finally { netApplying = false; }
     const S = GM.S; U.netLive = true; U.aiToken++; U.running = false;
-    if (!$('#screen-menu').hidden) { $('#screen-menu').hidden = true; closeModal(); roomOpen = false; clearSel(); VW().resize && VW().resize(); VW().fit && VW().fit(); SFX.ambient(true); }
+    if (!$('#screen-menu').hidden) { $('#screen-menu').hidden = true; enterHUD(); U.hist = []; U.regPrev = null; closeModal(); roomOpen = false; clearSel(); VW().resize && VW().resize(); VW().fit && VW().fit(); SFX.ambient(true); startMusic(); }
     if (NET.role === 'host') NET.relay(json, from);
     if (old) netFx(old, S);
-    if ((!old || old.turn !== S.turn) && S.phase !== 'over') { banner(curP(), `Round ${S.round}`); if (isHumanTurn()) { SFX.horn(); toast('<b>Your turn.</b>'); const mine = S.owner.map((o, i) => o === S.current ? i : -1).filter(i => i >= 0); if (mine.length) VW().ensureVisible(mine.slice(0, 3)); } }
+    if ((!old || old.turn !== S.turn) && S.phase !== 'over') { banner(curP(), `Round ${S.round}`); recordHistory(); if (isHumanTurn()) { SFX.horn(); toast('<b>Your turn.</b>'); const mine = S.owner.map((o, i) => o === S.current ? i : -1).filter(i => i >= 0); if (mine.length) VW().ensureVisible(mine.slice(0, 3)); } }
     if (S.winner && !(old && old.winner)) onVictory(S.winner);
     refresh(); updateNetChip();
     if (isHumanTurn() && GM.mustTrade() && $('#modal').hidden) openCards(true);
@@ -903,7 +1109,7 @@
     let conquered = false;
     for (let t = 0; t < S.owner.length; t++) {
       if (battle && (t === r.a || t === r.b)) continue;
-      if (S.owner[t] !== old.owner[t]) { if (S.owner[t] >= 0) { VW().flash(t, S.players[S.owner[t]].light); if (old.owner[t] >= 0) conquered = true; else VW().ring(t, S.players[S.owner[t]].light); } }
+      if (S.owner[t] !== old.owner[t]) { if (S.owner[t] >= 0) { if (old.owner[t] >= 0) { conquered = true; VW().conquest(t, S.players[S.owner[t]]); } else { VW().flash(t, S.players[S.owner[t]].light); VW().ring(t, S.players[S.owner[t]].light); } } }
       else { const d = S.armies[t] - old.armies[t]; if (d > 0) { VW().ring(t, '#ffe08a'); VW().floatText(t, '+' + d, '#ffe08a'); } else if (d < 0) VW().floatText(t, '−' + (-d), '#ff8a72'); }
     }
     if (conquered) SFX.conquer(); else if (!battle && S.armies.some((a, i) => a !== old.armies[i])) SFX.thud();

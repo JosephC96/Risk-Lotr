@@ -335,7 +335,8 @@ table.st th { font-family: var(--f-display); font-size: 12px; letter-spacing: 0.
   .phases .pchev { display: none; }
 }
 </style>
-<link rel="stylesheet" href="css/war-table.css?v=1795487982">
+<link rel="stylesheet" href="css/war-table.css?v=1795551595">
+<link rel="stylesheet" href="css/aaa.css?v=1795551595">
 
 <div id="app" hidden>
   <header id="top" class="wood">
@@ -369,6 +370,7 @@ table.st th { font-family: var(--f-display); font-size: 12px; letter-spacing: 0.
 
   <main id="mapwrap">
     <canvas id="map"></canvas>
+    <div class="map-light" aria-hidden="true"></div>
     <div class="mapframe"></div>
     <div class="map-caption" aria-hidden="true"><b>THE ATLAS OF MIDDLE-EARTH</b><span>Drag to explore · Scroll to zoom</span></div>
     <div class="zoomctl">
@@ -378,7 +380,8 @@ table.st th { font-family: var(--f-display); font-size: 12px; letter-spacing: 0.
     </div>
     <div id="tooltip" hidden></div>
     <div id="battle" hidden></div>
-    <div id="toast"></div>
+    <div id="pool" hidden><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="8" cy="7" r="3"/><circle cx="16" cy="7" r="3"/><path d="M2 19c0-4 3-6 6-6s6 2 6 6zM10 19c0-4 3-6 6-6s6 2 6 6z"/></svg><b></b><span>armies to place</span></div>
+    <div id="toast" role="status" aria-live="polite"></div>
   </main>
 
   <aside id="right" class="panel wood">
@@ -397,7 +400,7 @@ table.st th { font-family: var(--f-display); font-size: 12px; letter-spacing: 0.
       <div class="pstep" data-p="fortify"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 8h14l-3-3M20 16H6l3 3"/></svg><b>3</b>Fortify</div>
     </div>
     <div id="status"></div>
-    <button class="btn gold" id="btnNext"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 6l6 6-6 6M12 6l6 6-6 6"/></svg><span>End turn</span></button>
+    <button class="btn gold" id="btnNext"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 6l6 6-6 6M12 6l6 6-6 6"/></svg><span>End turn</span><kbd>Space</kbd></button>
   </footer>
 </div>
 
@@ -407,23 +410,26 @@ table.st th { font-family: var(--f-display); font-size: 12px; letter-spacing: 0.
     <h1>MIDDLE-EARTH</h1><div class="s">THE WAR OF THE REALMS</div>
     <div class="bar"><i id="loadbar"></i></div>
     <p id="loadmsg">Unrolling the parchment…</p>
+    <div class="tip" id="loadtip"></div>
   </div>
 </div>
+<div id="cine" hidden></div>
+<canvas id="fxOverlay" hidden></canvas>
 
 <div id="screen-menu" hidden><canvas id="menubg"></canvas><div id="menuMount"></div></div>
 <div id="modal" hidden></div>
 
-<script src="js/noise.js?v=1795487982"></script>
-<script src="js/materials.js?v=1795487982"></script>
-<script src="js/data.js?v=1795487982"></script>
-<script src="js/mapgen.js?v=1795487982"></script>
-<script src="js/atlas.js?v=1795487982"></script>
-<script src="js/game.js?v=1795487982"></script>
-<script src="js/ai.js?v=1795487982"></script>
-<script src="js/board.js?v=1795487982"></script>
-<script src="js/vignette.js?v=1795487982"></script>
-<script src="js/audio.js?v=1795487982"></script>
-<script src="js/net.js?v=1795487982"></script>
-<script src="js/ui.js?v=1795487982"></script>
+<script src="js/noise.js?v=1795551595"></script>
+<script src="js/materials.js?v=1795551595"></script>
+<script src="js/data.js?v=1795551595"></script>
+<script src="js/mapgen.js?v=1795551595"></script>
+<script src="js/atlas.js?v=1795551595"></script>
+<script src="js/game.js?v=1795551595"></script>
+<script src="js/ai.js?v=1795551595"></script>
+<script src="js/board.js?v=1795551595"></script>
+<script src="js/vignette.js?v=1795551595"></script>
+<script src="js/audio.js?v=1795551595"></script>
+<script src="js/net.js?v=1795551595"></script>
+<script src="js/ui.js?v=1795551595"></script>
 
 </html>

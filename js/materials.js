@@ -6,10 +6,10 @@
   const shieldCells = [[77, 5, 395, 487], [567, 6, 394, 486], [1062, 6, 396, 485],
     [78, 521, 393, 484], [568, 521, 392, 485], [1063, 521, 394, 484]];
   async function load() {
-    const read = async file => {
-      const img = new Image(); img.src = 'assets/' + file;
-      try { await img.decode(); return img; } catch (_) { return null; }
-    };
+    // onload rather than decode(): decode() never settles while the tab is in the background
+    const read = file => new Promise(done => {
+      const img = new Image(); img.onload = () => done(img); img.onerror = () => done(null); img.src = 'assets/' + file;
+    });
     [citadel, atlas, scenes, shields] = await Promise.all([
       read('citadel-engraving.png'), read('eldmar-illustrated-atlas.png'), read('territory-illustrations.png'),
       read('heraldic-shields.png'),
