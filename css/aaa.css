@@ -249,7 +249,7 @@ select:hover { border-color: var(--gold-hi); }
 #screen-loading { isolation: isolate; }
 .load svg { animation: glow 2.4s ease-in-out infinite, turn 40s linear infinite; }
 @keyframes turn { to { transform: rotate(360deg); } }
-.load h1 { letter-spacing: .2em; background: linear-gradient(100deg, #e9cf93, #fff7df 45%, #c79a48 55%, #e9cf93); background-size: 260% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 5s linear infinite; }
+.load h1 { letter-spacing: .14em; white-space: nowrap; font-size: clamp(26px, 8vw, 40px); background: linear-gradient(100deg, #e9cf93, #fff7df 45%, #c79a48 55%, #e9cf93); background-size: 260% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 5s linear infinite; }
 .bar { position: relative; }
 .bar i { position: relative; box-shadow: 0 0 12px #f6dc94aa; }
 .load p { min-height: 22px; transition: opacity .3s; }
