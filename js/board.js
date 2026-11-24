@@ -63,12 +63,15 @@
   /* ---------- ownership wash (cached) ---------- */
   function rebuildTint(S) {
     const key = S.owner.join(','); if (key === tintKey) return; tintKey = key;
-    const c = tint.getContext('2d'); c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.fillStyle = '#fff'; c.fillRect(0, 0, tint.width, tint.height);
+    const c = tint.getContext('2d'); c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.clearRect(0, 0, tint.width, tint.height);
     c.setTransform(TS, 0, 0, TS, 0, 0); c.lineJoin = 'round';
     for (let i = 0; i < NT; i++) {
       const o = S.owner[i]; if (o < 0) continue; const p = S.players[o];
-      c.globalAlpha = 0.10; c.fillStyle = p.color; c.fill(paths[i], 'evenodd');
-      c.save(); c.clip(paths[i], 'evenodd'); c.strokeStyle = p.color; c.globalAlpha = 0.45; c.lineWidth = 6; c.stroke(paths[i]); c.globalAlpha = 0.12; c.lineWidth = 22; c.stroke(paths[i]); c.restore();
+      // a clear wash of the owner's colour, a soft inner glow and a strong band hugging the border
+      c.globalAlpha = 0.09; c.fillStyle = p.color; c.fill(paths[i], 'evenodd');
+      c.save(); c.clip(paths[i], 'evenodd'); c.strokeStyle = p.color;
+      c.globalAlpha = 0.09; c.lineWidth = 34; c.stroke(paths[i]); c.globalAlpha = 0.15; c.lineWidth = 18; c.stroke(paths[i]);
+      c.globalAlpha = 0.7; c.lineWidth = 6; c.stroke(paths[i]); c.restore();
     }
     c.globalAlpha = 1;
   }
@@ -89,9 +92,13 @@
   function drawToken(c, x, y, s, p, n, state) {
     const px = x - 2 * s, pw = (n >= 100 ? 34 : n >= 10 ? 28 : 22) * s, ph = 19 * s;
     c.save(); c.shadowColor = 'rgba(0,0,0,0.5)'; c.shadowBlur = 4; c.shadowOffsetY = 2;
-    c.beginPath(); rr(c, px, y - ph / 2, pw, ph, 4 * s); c.fillStyle = state === 'sel' ? '#3a2410' : '#1d170f'; c.fill(); c.shadowColor = 'transparent';
-    c.lineWidth = 1.2 * s; c.strokeStyle = state === 'sel' ? '#ffd773' : '#b8913f'; c.stroke();
-    c.fillStyle = '#f6ead0'; c.font = `700 ${13.5 * s}px Cinzel, Georgia, serif`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(String(n), px + pw / 2 + 4 * s, y + 1 * s);
+    // the number plate carries the owner's colour so ownership reads at a glance
+    const pg = c.createLinearGradient(0, y - ph / 2, 0, y + ph / 2); pg.addColorStop(0, p.dark); pg.addColorStop(1, '#17120c');
+    c.beginPath(); rr(c, px, y - ph / 2, pw, ph, 4 * s); c.fillStyle = pg; c.fill(); c.shadowColor = 'transparent';
+    c.lineWidth = 1.4 * s; c.strokeStyle = state === 'sel' ? '#ffe9a6' : p.color; c.stroke();
+    c.font = `700 ${13.5 * s}px Cinzel, Georgia, serif`; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.lineJoin = 'round'; c.lineWidth = 2.6 * s; c.strokeStyle = 'rgba(15,10,5,0.75)'; c.strokeText(String(n), px + pw / 2 + 4 * s, y + 1 * s);
+    c.fillStyle = '#fff6e0'; c.fillText(String(n), px + pw / 2 + 4 * s, y + 1 * s);
     c.restore();
     drawShield(c, x - 8 * s, y, 25 * s, p, state === 'sel' ? '#ffd36a' : state === 'target' ? '#ff5a3a' : state === 'move' ? '#ffe28a' : null);
   }
@@ -200,7 +207,7 @@
     ctx.setTransform(dpr * z, 0, 0, dpr * z, dpr * (B.w / 2 - c.x * z + sx), dpr * (B.h / 2 - c.y * z + sy));
     ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(statics, 0, 0, W, H);
-    if (S) { rebuildTint(S); ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.drawImage(tint, 0, 0, W, H); ctx.restore(); }
+    if (S) { rebuildTint(S); ctx.drawImage(tint, 0, 0, W, H); }
     const px = 1 / z; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     if (B.life && S) drawLife(t, dt, S);
     const pulse = 0.5 + 0.5 * Math.sin(tm / 230);
