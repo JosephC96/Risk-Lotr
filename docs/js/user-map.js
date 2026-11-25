@@ -8,6 +8,11 @@
   // lands that face each other across a river with no bridge, or a mountain range: not neighbours, and the game can say why
   D.BARRIERS = {}; for (const [a, b, kind] of M.barriers || []) { D.BARRIERS[a + '-' + b] = kind; D.BARRIERS[b + '-' + a] = kind; }
   D.QUICK_TARGET = Math.ceil(D.TERR.length * 26 / 42);
+  // Standard rules as the rulebook for this 64-land board gives them: starting armies by number of
+  // players (five is our own extension of the table), two armies on every neutral land, card sets
+  // worth a fixed amount by kind with no extra armies for owning the land on a card, one card dealt
+  // to everyone before the first turn, and a trade-in forced at five cards, also after an elimination.
+  D.RULES = { startArmies: { 2: 60, 3: 52, 4: 45, 5: 40 }, neutralPer: 2, cardBonus: false, startCard: true, eliminationTrade: 5 };
   D.SEA_LINKS = M.seaLinks;
   D.RIVERS = []; D.SEA_LABELS = [];
   // Keep the existing ambient effects, registered to the new drawing.
@@ -17,6 +22,7 @@
     [[[199,407],[104,451],[69,530],[73,610],[129,691],[211,765],[300,800],[340,795]],9,.8],
     [[[340,795],[319,930],[295,1063],[222,1140],[198,1200],[150,1250],[100,1285],[88,1325],[113,1360],[170,1376],[274,1364],[363,1392],[463,1379]],8,.8],
     [[[463,1379],[440,1440],[425,1510],[425,1557]],8,.8],
+    [[[340,795],[319,930],[295,1063],[222,1140],[198,1200],[150,1250],[100,1285],[88,1325],[113,1360],[170,1376],[274,1364],[305,1382],[345,1425],[385,1480],[412,1525],[425,1557]],8,.8],
   ].map(([points,speed,size]) => [points.map(([x,y]) => [x*2,y*2]),speed,size]);
 
   async function generate(progress) {

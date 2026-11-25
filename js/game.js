@@ -67,8 +67,10 @@
       log: [], conquered: false, fortified: false, reinforcements: 0, reinfDetail: null,
       pending: null, setupPool: [], winner: null, returnToAttack: false, lastAttack: null, history: [],
     };
-    const start = (START_ARMIES[n] || 25) + Math.max(0, Math.ceil(NT / players.length) - Math.ceil(42 / players.length));
+    const RULES = D.RULES || {};
+    const start = (RULES.startArmies && RULES.startArmies[n]) || (START_ARMIES[n] || 25) + Math.max(0, Math.ceil(NT / players.length) - Math.ceil(42 / players.length));
     S.setupPool = players.map(() => start);
+    if (RULES.startCard) players.forEach(p => { if (!p.neutral) { const c = S.deck.pop(); if (c) p.cards.push(c); } });
 
     // missions
     if (cfg.mode === 'missions') {
@@ -107,7 +109,11 @@
       ts.forEach((t, i) => { const p = order[i % order.length]; S.owner[t] = p; S.armies[t] = 1; S.setupPool[p]--; });
       log('The territories have been dealt at random among the realms.');
       // neutral auto places all
-      players.forEach(p => { if (p.neutral) autoDistribute(p.idx); });
+      players.forEach(p => {
+        if (!p.neutral) return;
+        if (RULES.neutralPer) { S.owner.forEach((o, t) => { if (o === p.idx) S.armies[t] = RULES.neutralPer; }); S.setupPool[p.idx] = 0; }
+        else autoDistribute(p.idx);
+      });
       if (cfg.mode === 'quick') {
         players.forEach(p => autoDistribute(p.idx));
         beginTurns();
@@ -282,7 +288,7 @@
     if (cards.some(c => !c) || !isSet(cards)) return null;
     const value = setValue(cards);
     let bonusT = -1;
-    for (const c of cards) if (c.t >= 0 && S.owner[c.t] === S.current) { bonusT = c.t; break; }
+    if (!D.RULES || D.RULES.cardBonus !== false) for (const c of cards) if (c.t >= 0 && S.owner[c.t] === S.current) { bonusT = c.t; break; }
     if (bonusT >= 0) S.armies[bonusT] += 2;
     S.reinforcements += value;
     S.tradeCount++;
@@ -372,7 +378,7 @@
     emit('move', { from: pd.from, to: pd.to, n, conquest: true });
     // card-overflow after eliminating a player
     const p = S.players[S.current];
-    if (!S.winner && p.cards.length >= 6) {
+    if (!S.winner && p.cards.length >= ((D.RULES && D.RULES.eliminationTrade) || 6)) {
       S.phase = 'reinforce'; S.reinforcements = 0; S.returnToAttack = true; S.reinfDetail = null; S.placed = {};
       log(`${p.fname} hold ${p.cards.length} cards and must trade in at once.`, p.idx);
       emit('forcedTrade');

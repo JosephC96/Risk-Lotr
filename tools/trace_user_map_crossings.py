@@ -1,19 +1,20 @@
-"""Which lands can attack which: read from the drawing.
+"""Which lands can attack which, and which region each belongs to: read from the drawing.
 
     python tools/trace_user_map_crossings.py            # report + QA picture, changes nothing
-    python tools/trace_user_map_crossings.py --write    # rewrite the neighbours in js/user-map-data.js
+    python tools/trace_user_map_crossings.py --write    # rewrite neighbours, regions and sea lanes in js/user-map-data.js
 
 Run it after trace_user_map_borders.py --write (it uses that tool's outlines in output/borders).
 
-The rule of the map:
-  * two lands that share a border on open ground are neighbours. Most such borders are dotted and are
-    found by the tool; the few drawn as a solid line (the edge of a forest, a stream with no water
-    in it) are listed in SOLID;
-  * a river with water in it cannot be crossed, except where a bridge is drawn;
-  * a mountain range cannot be crossed, except through a gate drawn in it;
-  * the printed sea lanes join the lands at their ends.
-Solid borders, bridges and gates are listed by hand, read off the drawing: there are few of them, and
-a detector that misses or invents one changes the game. Any other border two lands share is a barrier.
+The rule, as the rulebook of the game states it: lands are adjacent if they share a border, or a
+sea-line joins them. Mountains and rivers are impassable, so lands separated by mountains are not
+adjacent, nor are lands separated by a river unless a bridge crosses it.
+  * dotted borders are found by the tool (they always lie inside one region);
+  * borders drawn as a solid line with neither water nor peaks on them are borders like any other
+    (they mark where two regions meet); they are listed in SOLID;
+  * bridges and gates are listed by hand, read off the drawing;
+  * every other contact between two lands is a river or a mountain range, and is closed.
+REGION_OF corrects the region of the lands the first trace guessed wrong (the drawing tints each
+region differently, and the dotted borders never cross from one region to another).
 """
 import json, sys
 from pathlib import Path
@@ -37,9 +38,9 @@ BRIDGES = [
     (1316, 2388, 'Minas Tirith', 'Ithilien'), (1421, 2923, 'Harondor', 'Harad'), (1217, 3110, 'Umbar', 'Far Harad'),
 ]
 GATES = [
-    (1520, 2185, 'Dead Marshes', 'Udûn'),     # the Morannon, the Black Gate
+    (1520, 2185, 'Dead Marshes', 'Udûn'),     # the Morannon, the Black Gate, set in the mountain wall
 ]
-# borders on open ground that are drawn as a solid line instead of a dotted one
+# borders drawn as a solid line on open ground: where two regions meet without a river or a range
 SOLID = [
     ('Forodwaith', 'North Rhûn'), ('Forodwaith', 'Withered Heath'), ('Eastern Angmar', 'Carrock'), ('Borderlands', 'Lune Valley'),
     ('Borderlands', 'Evendim Hills'), ('South Downs', 'Minhiriath'), ('Rhudaur', 'Carrock'), ('Eregion', 'Moria'), ('Lórien', 'Fangorn'),
@@ -47,6 +48,10 @@ SOLID = [
     ('West Rohan', 'Drúwaith Iaur'), ('Gap of Rohan', 'Minas Tirith'), ('Dead Marshes', 'Ithilien'), ('Ithilien', 'Minas Morgul'),
     ('South Ithilien', 'Harondor'),
 ]
+# sea lanes printed on the drawing that the first trace missed
+SEA_LANES = [('Minhiriath', 'Umbar')]
+# the region of each land the first trace put in the wrong one
+REGION_OF = {'Carrock': 'Mirkwood', 'Esgaroth': 'Rhûn', 'Rhûn Hills': 'Rhovanion', 'The Wold': 'Rhovanion', 'Eregion': 'Rohan'}
 LEAST = 60        # length of dotted border, in pixels of the 2x trace, for two lands to be neighbours
 
 
@@ -70,8 +75,13 @@ def main():
     pair = lambda c: (c // 100, c % 100)
     land = {pair(c) for c, k in clear.items() if k >= LEAST} | solid
     bridges = {key(a, b) for _, _, a, b in BRIDGES}; gates = {key(a, b) for _, _, a, b in GATES}
+    for a_, b_ in SEA_LANES:
+        if sorted((ID[a_], ID[b_])) not in [sorted(l) for l in data['seaLinks']]: data['seaLinks'].append([ID[a_], ID[b_]])
     sea = {tuple(sorted(l)) for l in data.get('seaLinks', [])}
     new = land | bridges | gates | sea
+    rid = {r['name']: r['id'] for r in data['regions']}
+    for name, region in REGION_OF.items(): terr[ID[name]]['region'] = rid[region]
+    print('lands per region', {r['name']: sum(t['region'] == r['id'] for t in terr) for r in data['regions']})
     old = {(t['id'], j) for t in terr for j in t['adj'] if t['id'] < j}
     nm = lambda k: f"{terr[k[0]]['name']} - {terr[k[1]]['name']}"
 

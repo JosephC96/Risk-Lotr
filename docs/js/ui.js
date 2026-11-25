@@ -111,7 +111,8 @@
     U.aiToken++; U.running = false;
     hideBattle(); closeModal();
     menuFx(); SFX.tension(0); stopFireworks();
-    const cfg = Object.assign({ mode: 'classic', deal: 'random', fortify: 'adjacent', cardMode: 'progressive', neutral: true, seats: ['human', 'normal', 'normal', 'off', 'normal'] }, JSON.parse(store.get('eldmar.menu') || '{}'));
+    const R = D.RULES || {}, official = !!R.startArmies;
+    const cfg = Object.assign({ mode: 'classic', deal: 'random', fortify: official ? 'connected' : 'adjacent', cardMode: official ? 'fixed' : 'progressive', neutral: true, seats: ['human', 'normal', 'normal', 'off', 'normal'] }, JSON.parse(store.get(MENU_KEY) || '{}'));
     const hasSave = !!store.get(SAVE_KEY);
     const hosting = NET.savedHosting(), lastRoom = NET.lastRoom();
     const modeCard = (k, ic, t, s) => `<button class="mode ${cfg.mode === k ? 'on' : ''}" data-mode="${k}">${ic}<b>${t}</b><span>${s}</span></button>`;
@@ -133,8 +134,8 @@
           <div class="lbl">Rule options</div>
           <div class="opts">
             <div class="opt"><label for="o-deal">Territory setup</label>${sel('o-deal', [['random', 'Dealt at random'], ['manual', 'Claimed in turns']], cfg.deal)}</div>
-            <div class="opt"><label for="o-fort">Fortify move</label>${sel('o-fort', [['adjacent', 'Classic: adjacent only'], ['connected', 'Through connected territories']], cfg.fortify)}</div>
-            <div class="opt"><label for="o-cards">Card trade-ins</label>${sel('o-cards', [['progressive', 'Progressive (4, 6, 8…)'], ['fixed', 'Fixed by set']], cfg.cardMode)}</div>
+            <div class="opt"><label for="o-fort">Fortify move</label>${sel('o-fort', [['connected', 'Through connected territories'], ['adjacent', 'Adjacent only']], cfg.fortify)}</div>
+            <div class="opt"><label for="o-cards">Card trade-ins</label>${sel('o-cards', [['fixed', 'By kind of set (4, 6, 8, 10)'], ['progressive', 'Rising (4, 6, 8, 10, 12, 15…)']], cfg.cardMode)}</div>
             <div class="opt"><label for="o-neutral">Two players</label>${sel('o-neutral', [['yes', 'With a neutral army'], ['no', 'No neutral army']], cfg.neutral ? 'yes' : 'no')}</div>
           </div>
         </div>
@@ -166,7 +167,7 @@
       if (active.length < 2) { $('#mNote').textContent = 'You need at least two realms in the game.'; $('#mNote').style.color = '#ff9b85'; return; }
       const mode = M.querySelector('.mode.on').dataset.mode;
       const c = { mode, deal: $('#o-deal').value, fortify: $('#o-fort').value, cardMode: $('#o-cards').value, neutral: $('#o-neutral').value === 'yes', seats };
-      store.set('eldmar.menu', JSON.stringify(c));
+      store.set(MENU_KEY, JSON.stringify(c));
       U.settings.speed = $('#o-speed').value; U.settings.life = $('#o-life').value === 'on'; saveSettings(); applyLife();
       startGame({
         mode, deal: c.deal, fortify: c.fortify, cardMode: c.cardMode, neutral: c.neutral, quickTarget: D.QUICK_TARGET || 26, quickRounds: 12,
@@ -180,7 +181,7 @@
       const active = seats.map((v, i) => ({ v, i })).filter(x => x.v !== 'off');
       if (active.filter(x => x.v === 'human').length < 2) { note.textContent = 'Set at least two realms to Human: one is yours, the others are open seats for your friends.'; note.style.color = '#ff9b85'; return; }
       const c = { mode: M.querySelector('.mode.on').dataset.mode, deal: $('#o-deal').value, fortify: $('#o-fort').value, cardMode: $('#o-cards').value, neutral: $('#o-neutral').value === 'yes', seats };
-      store.set('eldmar.menu', JSON.stringify(c));
+      store.set(MENU_KEY, JSON.stringify(c));
       U.settings.speed = $('#o-speed').value; U.settings.life = $('#o-life').value === 'on'; saveSettings(); applyLife();
       let first = true;
       hostOnline({ mode: c.mode, deal: c.deal, fortify: c.fortify, cardMode: c.cardMode, neutral: c.neutral, quickTarget: D.QUICK_TARGET || 26, quickRounds: 12 },
@@ -255,9 +256,11 @@
   // a land that looks next door but lies beyond a river or a mountain range: say why it cannot be reached
   function barrierHint(from, to) {
     const k = from >= 0 && D.BARRIERS ? D.BARRIERS[from + '-' + to] : null; if (!k) return false;
-    toast(k === 'river' ? `No bridge crosses the river between ${D.TERR[from].name} and ${D.TERR[to].name}.` : `The mountains between ${D.TERR[from].name} and ${D.TERR[to].name} cannot be crossed.`);
+    const A = D.TERR[from].name, B = D.TERR[to].name;
+    toast(k === 'river' ? `No bridge crosses the river between ${A} and ${B}.` : `The mountains between ${A} and ${B} cannot be crossed.`);
     return true;
   }
+  const MENU_KEY = 'eldmar.menu.v2';     // v2: the defaults follow the rulebook (fixed card sets, fortify through connected lands)
   function startMusic() { SFX.wantMusic = true; if (U.settings.sound) SFX.music(true); }
 
   /* ---------------- flow ---------------- */
@@ -781,7 +784,7 @@
       claim: 'In turn, each realm claims a free territory by placing one army on it, until none are left unclaimed.',
       place: 'In turn, each realm places one army on a territory it owns until its starting armies run out.',
       reinforce: 'You receive one army for every three territories (minimum three), plus the bonus of every region you hold completely. You may trade cards before placing.',
-      attack: 'Attack from a territory with 2 or more armies into an enemy neighbour. Rivers are crossed only at bridges and mountains only at gates. You roll up to 3 dice, the defender up to 2. The defender wins ties.',
+      attack: 'Attack from a territory with 2 or more armies into an enemy neighbour. Mountains cannot be crossed, and rivers only at a bridge. You roll up to 3 dice, the defender up to 2. The defender wins ties.',
       fortify: 'You may make one fortify move: armies from one of your territories to another. At least one must stay behind.',
       over: 'The war is over.', setup: '',
     }[ph] || '';
@@ -807,7 +810,7 @@
     const body = document.createElement('div');
     const render = () => {
       const val = S.cfg.cardMode === 'fixed' ? 'depends on the set (4/6/8/10)' : `<b style="color:var(--gold-hi)">${GM.nextTradeValue()}</b> armies`;
-      body.innerHTML = `<p class="hint" style="text-align:center;margin-top:0">Next trade-in: ${val}. Three of a kind, one of each, or any two plus a wild card. If a card shows a territory you own, you get +2 armies there.</p>
+      body.innerHTML = `<p class="hint" style="text-align:center;margin-top:0">Next trade-in: ${val}. Three of a kind, one of each, or any two plus a wild card.${D.RULES && D.RULES.cardBonus === false ? '' : ' If a card shows a territory you own, you get +2 armies there.'}</p>
         <div class="hand">${viewer.cards.length ? viewer.cards.map((c, i) => { const own = c.t >= 0 && S.owner[c.t] === viewer.idx; return `<button type="button" class="tcard ${c.type === 3 ? 'wild' : ''} ${selIdx.has(i) ? 'sel' : ''}" data-i="${i}" aria-pressed="${selIdx.has(i)}"><span class="ct">${c.t >= 0 ? esc(D.TERR[c.t].name) : 'Wild card'}</span><canvas class="card-scene" data-territory="${c.t}" aria-hidden="true"></canvas>${cardSVG(c.type)}<span><span class="ty">${D.CARD_TYPES[c.type].name}</span><span class="own">${own ? '+2 · yours' : ''}</span></span></button>`; }).join('') : '<p class="hint">No cards yet. Conquer at least one territory on your turn to earn one.</p>'}</div>`;
       body.querySelectorAll('.card-scene').forEach(canvas => {
         const t = +canvas.dataset.territory;
@@ -860,23 +863,24 @@
     showModal({ wide: true, title: 'War chronicle', sub: 'Most recent events first', body, buttons: [{ label: 'Close', onClick: closeModal }] });
   }
   function openRules() {
+    const R = D.RULES || {};
     const body = document.createElement('div'); body.className = 'rules';
     body.innerHTML = `
       <h3>Setup</h3><ul>
-        <li>Starting armies: 40 (2 players), 35 (3), 30 (4) and 25 (5). With two players you can add a neutral army that only defends.</li>
+        <li>Starting armies: ${R.startArmies ? `${R.startArmies[2]} each with 2 players, ${R.startArmies[3]} with 3, ${R.startArmies[4]} with 4 and ${R.startArmies[5]} with 5` : '40 (2 players), 35 (3), 30 (4) and 25 (5)'}. With two players you can add a neutral army that only defends${R.neutralPer ? ', with ' + R.neutralPer + ' armies on each of its territories' : ''}.${R.startCard ? ' Every realm starts with one territory card.' : ''}</li>
         <li>Each realm rolls one die and the highest goes first. Territories are dealt at random or claimed in turns, one at a time; then the remaining armies are placed one by one.</li></ul>
       <h3>1 · Reinforce</h3><ul>
         <li>You receive territories ÷ 3 (rounded down, minimum 3) plus the bonus of every region you hold completely.</li>
-        <li>Card sets: three of a kind, one of each kind, or any two plus a wild card. Sets are worth 4, 6, 8, 10, 12, 15 and then +5 for each further trade-in (one counter shared by all realms).</li>
-        <li>If a traded card shows a territory you own, you get 2 extra armies on it. With 5 or more cards you must trade.</li></ul>
+        <li>Card sets: three of a kind, one of each kind, or any two plus a wild card. By the rulebook a set is worth 4, 6 or 8 armies for three of a kind and 10 for one of each; the rising option pays 4, 6, 8, 10, 12, 15 and then +5 for each further trade-in.</li>
+        <li>${R.cardBonus === false ? '' : 'If a traded card shows a territory you own, you get 2 extra armies on it. '}With 5 or more cards you must trade.</li></ul>
       <h3>2 · Attack</h3><ul>
         <li>Only from territories with 2 or more armies, and only into neighbours (dashed sea routes count as borders).</li>
-        <li>Rivers and mountains are barriers: a river is crossed only where a bridge is drawn, a mountain range only through a gate. Any other shared border is open.</li>
+        <li>Territories are neighbours if they share a border or a sea route joins them. Mountains and rivers cannot be crossed: lands divided by a mountain range are not neighbours, and lands divided by a river are neighbours only where a bridge is drawn.</li>
         <li>The attacker rolls 1, 2 or 3 dice (always one fewer than the armies there); the defender rolls 1 or 2. The highest dice are compared and the defender wins ties.</li>
         <li>When you conquer, you must move in at least as many armies as the dice you rolled on the last attack.</li>
-        <li>If you eliminate a realm you take its cards. If that leaves you with 6 or more, you must trade in at once until you hold 4 or fewer.</li></ul>
+        <li>If you eliminate a realm you take its cards. If that leaves you with ${R.eliminationTrade || 6} or more, you must trade in at once until you hold 4 or fewer.</li></ul>
       <h3>3 · Fortify</h3><ul>
-        <li>One move at the end of the turn: armies from one of your territories to an adjacent one (or a connected one, depending on the option chosen), leaving at least one behind.</li>
+        <li>One move at the end of the turn: armies from one of your territories to another that is connected to it through territories you hold (or only to an adjacent one, if that option is chosen), leaving at least one behind.</li>
         <li>If you conquered at least one territory this turn, you draw a card (only one per turn).</li></ul>
       <h3>Victory</h3><ul>
         <li>Classic: eliminate every rival realm. Missions: complete your secret objective. Quick: ${D.QUICK_TARGET || 26} territories, or the most when round 12 ends.</li></ul>
