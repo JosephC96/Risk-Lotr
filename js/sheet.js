@@ -8,8 +8,8 @@
   const UNCIAL = '"Uncial Antiqua", "IM Fell English", Georgia, serif', FELL = '"IM Fell English", Georgia, serif';
   const BAND = 15, GAP = 9, MARGIN = 74, TABLE = 44;
   const TAU = Math.PI * 2;
-  const S = { on: !!D.MAP_IMAGE, A: 0, decor: false, BAND, MARGIN, TABLE, rose: null };
-  let wood = null, woodPat = null, rules = null, keysDark = null, paper = null, ticks = null, rose = null, rhumb = null, built = -1;
+  const S = { on: !!D.MAP_IMAGE, A: 0, decor: false, BAND, MARGIN, TABLE, rose: null, rev: 0 };   // rev: bumped whenever the sheet would paint differently
+  let wood = null, woodPat = null, shade = null, rules = null, keysDark = null, paper = null, ticks = null, rose = null, rhumb = null, built = -1;
 
   function loadWood() {
     const img = new Image();
@@ -17,14 +17,14 @@
       // mirrored 2x2 so the planks tile without a seam
       const n = 512, c = document.createElement('canvas'); c.width = c.height = n * 2; const x = c.getContext('2d');
       for (const [fx, fy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) { x.save(); x.translate(fx ? n * 2 : 0, fy ? n * 2 : 0); x.scale(fx ? -1 : 1, fy ? -1 : 1); x.drawImage(img, 0, 0, n, n); x.restore(); }
-      wood = c; woodPat = null; if (G.BOARD) G.BOARD.dirty = true;
+      wood = c; woodPat = null; S.rev++; if (G.BOARD) G.BOARD.dirty = true;
     };
     img.src = 'assets/painted-walnut.png';
   }
 
   /* everything that depends on how far the sea runs west */
   function layout(A) {
-    A = Math.max(0, Math.round(A)); if (A === built) return; built = A; S.A = A; S.decor = A >= 430;
+    A = Math.max(0, Math.round(A)); if (A === built) return; built = A; S.A = A; S.decor = A >= 430; S.rev++;
     const rnd = G.NZ.mulberry32(7331);
     const x0 = -A, x1 = W, y0 = 0, y1 = H;
     S.print = { x0, y0, x1, y1 };
@@ -86,6 +86,16 @@
     }
   }
 
+  // The sheet's shadow on the table, blurred once at an eighth of the size and stretched under the
+  // paper. A live blurred shadow this large costs more than the rest of the frame put together.
+  function paperShade() {
+    const q = 8, pad = 136, P = S.paper, c = document.createElement('canvas'); c.width = Math.ceil((P.x1 - P.x0 + pad * 2) / q); c.height = Math.ceil((P.y1 - P.y0 + pad * 2) / q);
+    const x = c.getContext('2d'), far = c.width + 60;   // the sheet is drawn off the canvas, so only its shadow lands on it
+    x.shadowColor = 'rgba(0,0,0,0.7)'; x.shadowBlur = 44 / q; x.shadowOffsetX = far + 8 / q; x.shadowOffsetY = 16 / q;
+    x.setTransform(1 / q, 0, 0, 1 / q, (pad - P.x0) / q - far, (pad - P.y0) / q); x.fillStyle = '#000'; x.fill(paper);
+    return { c, x: P.x0 - pad, y: P.y0 - pad, w: c.width * q, h: c.height * q, of: paper };
+  }
+
   /* under the map: table, paper, and the sea that continues the drawing */
   function drawBase(ctx, v, z, dpr) {
     const P = S.paper, covered = v.x0 >= P.x0 + 8 && v.x1 <= P.x1 - 8 && v.y0 >= P.y0 + 8 && v.y1 <= P.y1 - 8;
@@ -94,8 +104,9 @@
       if (wood) { if (!woodPat) woodPat = ctx.createPattern(wood, 'repeat'); const k = 1.9; ctx.scale(k, k); ctx.fillStyle = woodPat; ctx.fillRect(v.x0 / k - 1, v.y0 / k - 1, (v.x1 - v.x0) / k + 2, (v.y1 - v.y0) / k + 2); ctx.scale(1 / k, 1 / k); ctx.fillStyle = 'rgba(14,8,3,0.42)'; }
       else ctx.fillStyle = '#24180d';
       ctx.fillRect(v.x0 - 1, v.y0 - 1, v.x1 - v.x0 + 2, v.y1 - v.y0 + 2);
-      ctx.shadowColor = 'rgba(0,0,0,0.7)'; ctx.shadowBlur = 44 * z * dpr; ctx.shadowOffsetX = 8 * z * dpr; ctx.shadowOffsetY = 16 * z * dpr;
-      ctx.fillStyle = PAPER; ctx.fill(paper); ctx.restore();
+      ctx.restore();
+      if (!shade || shade.of !== paper) shade = paperShade();
+      ctx.drawImage(shade.c, shade.x, shade.y, shade.w, shade.h);
     }
     ctx.fillStyle = PAPER; ctx.fill(paper);
     ctx.save(); ctx.clip(paper); ctx.lineJoin = 'round';

@@ -306,3 +306,16 @@ table.st tr.win td { color: var(--gold-hi); font-weight: 700; }
 .map-caption { color: #efe3c2; text-shadow: 0 1px 2px #000d, 0 0 8px #0008; transition: left .35s var(--ease-out); }
 #mapwrap.has-mini .map-caption { left: calc(var(--mini-w, 150px) + 42px); }
 @media (max-width: 560px) { #minimap { left: 12px; bottom: 12px; } #mapwrap.has-mini .map-caption { display: none; } }
+
+/* phones: the candle light without blend modes or flicker, which force a full-screen blend on every frame */
+@media (pointer: coarse), (max-width: 700px) {
+  .map-light::before, .map-light::after { mix-blend-mode: normal; animation: none; opacity: .2; }
+}
+
+/* the player's own soundtrack */
+.track { display: grid; grid-template-columns: 96px 1fr auto; align-items: center; gap: 6px 12px; margin: -4px 0 16px; }
+.track-l { font: 600 12px var(--f-display); letter-spacing: .12em; text-transform: uppercase; color: #dcc491; }
+.track-n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: italic 15px var(--f-body, 'IM Fell English', Georgia, serif); color: var(--gold-hi); }
+.track-b { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.track-h { grid-column: 1 / -1; margin: 0; font-size: 12.5px; line-height: 1.4; color: #a8956c; }
+@media (max-width: 560px) { .track { grid-template-columns: 1fr; } .track-b { justify-content: flex-start; } }

@@ -1,10 +1,83 @@
-/* Synthesised score and sound effects (WebAudio) — no external files.
-   Buses: effects and music each have their own gain and share a generated hall reverb. */
+/* Sound effects, the recorded score and a synthesised fallback (WebAudio).
+   Buses: effects and synthesised music each have their own gain and share a generated hall reverb.
+   Music, in order of preference:
+     1. a file the player picks in the Menu, played on a loop (kept in this browser only, never uploaded);
+     2. the original score: the pieces listed in window.MUSIC, played one after another in a shuffled
+        order that changes every time round;
+     3. the synthesised score, when neither is there or a recording cannot be played. */
 (function (G) {
   let ctx = null, master = null, sfxBus = null, musBus = null, rev = null, on = true, ambient = null;
   const vol = { sfx: 0.8, music: 0.55 };
   const mus = { on: false, timer: null, next: 0, bar: 0, tension: 0, tensionT: 0, nodes: new Set() };
+  const rec = { url: '', name: '', kind: null, id: '', list: null, order: [], at: 0, fails: 0, el: null, gain: null, on: false, saver: null, stopT: null };
+  const GRAPH = location.protocol !== 'file:';   // a page opened from disk may not route a file through WebAudio
+  const TRACK_GAIN = 0.75, POS_KEY = 'mearth.trackpos', LAST_KEY = 'mearth.lastpiece';
 
+  /* ---------- recorded music ---------- */
+  const store = {
+    open() { return new Promise((res, rej) => { const r = indexedDB.open('mearth-audio', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+    async run(mode, fn) { const db = await store.open(); try { return await new Promise((res, rej) => { const tx = db.transaction('kv', mode), rq = fn(tx.objectStore('kv')); tx.oncomplete = () => res(rq.result); tx.onerror = tx.onabort = () => rej(tx.error); }); } finally { db.close(); } },
+    get: k => store.run('readonly', s => s.get(k)), set: (k, v) => store.run('readwrite', s => s.put(v, k)), del: k => store.run('readwrite', s => s.delete(k)),
+  };
+  // a fresh order for the pieces; it never opens with the piece that was heard last
+  function shuffle(last) {
+    const n = rec.list.length, o = Array.from({ length: n }, (_, i) => i);
+    for (let i = n - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [o[i], o[j]] = [o[j], o[i]]; }
+    if (n > 1 && o[0] === last) [o[0], o[1]] = [o[1], o[0]];
+    rec.order = o; rec.at = 0;
+  }
+  function swap(set) {
+    const playing = rec.on || mus.on; if (playing) S.music(false);
+    if (rec.el) { try { rec.el.pause(); rec.el.removeAttribute('src'); rec.el.load(); } catch (e) {} }
+    if (rec.url && rec.kind === 'file') { try { URL.revokeObjectURL(rec.url); } catch (e) {} }
+    rec.url = ''; rec.name = ''; rec.kind = null; rec.id = ''; rec.list = null; rec.fails = 0; set();
+    if (playing && S.wantMusic) S.music(true);
+  }
+  function useFile(url, name, id) { swap(() => { rec.url = url; rec.name = name; rec.kind = 'file'; rec.id = id; }); }
+  function useScore() {
+    swap(() => {
+      const M = window.MUSIC; if (!M || !M.tracks || !M.tracks.length) return;
+      rec.list = M.tracks.map(t => (M.base || '') + t); rec.kind = 'score'; rec.name = 'Original score'; rec.id = 'score';
+      let last = -1; try { last = +localStorage.getItem(LAST_KEY); } catch (e) {} shuffle(isFinite(last) ? last : -1); rec.url = rec.list[rec.order[0]];
+    });
+  }
+  function trackVolume(fade) {
+    const v = vol.music * TRACK_GAIN;
+    if (rec.gain) rec.gain.gain.setTargetAtTime(rec.on ? v : 0.0001, ctx.currentTime, fade || 0.05); else if (rec.el) rec.el.volume = rec.on ? Math.min(1, v) : 0;
+  }
+  function savePos() { try { if (rec.kind === 'file' && rec.el && rec.on && rec.el.currentTime > 0) localStorage.setItem(POS_KEY, JSON.stringify({ id: rec.id, t: Math.floor(rec.el.currentTime) })); } catch (e) {} }
+  function start(a) { const pr = a.play(); if (pr && pr.catch) pr.catch(() => {}); }
+  // the next piece of the score; after the last one the order is shuffled again
+  function advance() {
+    if (rec.kind !== 'score' || !rec.el) return;
+    const was = rec.order[rec.at]; if (++rec.at >= rec.order.length) shuffle(was);
+    rec.url = rec.list[rec.order[rec.at]]; rec.el.src = rec.url; if (rec.on && !document.hidden) start(rec.el);
+  }
+  // no recording can be played: the synthesised score takes over
+  function giveUp() { const was = rec.on; rec.url = ''; rec.kind = null; rec.list = null; rec.on = false; clearInterval(rec.saver); if (was && S.wantMusic) S.music(true); }
+  function playTrack() {
+    let a = rec.el;
+    if (!a) {
+      a = rec.el = new Audio(); a.preload = 'auto';
+      a.addEventListener('ended', advance);
+      a.addEventListener('playing', () => { rec.fails = 0; if (rec.kind === 'score') { try { localStorage.setItem(LAST_KEY, rec.order[rec.at]); } catch (e) {} } });
+      // a piece that will not load is skipped; a file of the player's own that will not load is dropped
+      a.addEventListener('error', () => { if (!a.getAttribute('src')) return; if (rec.kind === 'score' && ++rec.fails < 3) advance(); else giveUp(); });
+      if (GRAPH) { try { const n = ctx.createMediaElementSource(a); rec.gain = ctx.createGain(); rec.gain.gain.value = 0.0001; n.connect(rec.gain); rec.gain.connect(ctx.destination); } catch (e) { rec.gain = null; } }
+    }
+    clearTimeout(rec.stopT); a.loop = rec.kind === 'file';
+    if (a.getAttribute('src') !== rec.url) {
+      a.src = rec.url;
+      // a long file of the player's own carries on from where it was left
+      if (rec.kind === 'file') { try { const p = JSON.parse(localStorage.getItem(POS_KEY) || 'null'); if (p && p.id === rec.id && p.t > 5) a.addEventListener('loadedmetadata', () => { if (isFinite(a.duration) && p.t < a.duration - 20) a.currentTime = p.t; }, { once: true }); } catch (e) {} }
+    }
+    rec.on = true; trackVolume(1.2); start(a);
+    clearInterval(rec.saver); rec.saver = setInterval(savePos, 5000);
+  }
+  function stopTrack() {
+    if (!rec.on) return; savePos(); rec.on = false; clearInterval(rec.saver); trackVolume(0.25);
+    const a = rec.el; clearTimeout(rec.stopT); rec.stopT = setTimeout(() => { if (!rec.on && a) a.pause(); }, 900);
+  }
   function impulse(dur, decay) {
     const n = Math.ceil(ctx.sampleRate * dur), b = ctx.createBuffer(2, n, ctx.sampleRate);
     for (let ch = 0; ch < 2; ch++) {
@@ -143,7 +216,7 @@
     },
     ambient(enable) {
       if (!ensure()) return;
-      if (!enable || !on) { if (ambient) { ambient.g.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.6); const a = ambient; setTimeout(() => { try { a.src.stop(); a.lfo.stop(); } catch (e) {} }, 2500); ambient = null; } return; }
+      if (!enable || !on || (rec.url && S.wantMusic)) { if (ambient) { ambient.g.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.6); const a = ambient; setTimeout(() => { try { a.src.stop(); a.lfo.stop(); } catch (e) {} }, 2500); ambient = null; } return; }
       if (ambient) return;
       const t = ctx.currentTime;
       const src = ctx.createBufferSource(); src.buffer = noiseBuf(4); src.loop = true;
@@ -155,14 +228,30 @@
     },
     music(enable) {
       if (!ensure()) return;
-      if (enable && on && vol.music > 0.01) { if (mus.on) return; mus.on = true; mus.next = 0; pump(); mus.timer = setInterval(pump, 300); }
+      const go = enable && on && vol.music > 0.01;
+      if (go && rec.url) { S.ambient(false); if (!rec.on) playTrack(); enable = false; } else stopTrack();
+      if (go && !rec.url) { if (mus.on) return; mus.on = true; mus.next = 0; pump(); mus.timer = setInterval(pump, 300); }
       else { mus.on = false; clearInterval(mus.timer); const t = ctx.currentTime; mus.nodes.forEach(n => { try { n.stop(t + 0.05); } catch (e) {} }); mus.nodes.clear(); }
     },
+    // the player's own soundtrack: { name, kind: 'file' | 'local' } or null when the synthesised score plays
+    // what is playing: { name, kind: 'score' | 'file', piece, pieces, playing } or null for the synthesised score
+    get soundtrack() { return rec.url ? { name: rec.name, kind: rec.kind, piece: rec.kind === 'score' ? rec.order[rec.at] + 1 : 0, pieces: rec.list ? rec.list.length : 0, playing: !!(rec.el && rec.on && !rec.el.paused), time: rec.el ? rec.el.currentTime : 0, length: rec.el && isFinite(rec.el.duration) ? rec.el.duration : 0 } : null; },
+    hasScore() { return !!(window.MUSIC && window.MUSIC.tracks && window.MUSIC.tracks.length); },
+    nextPiece() {
+      if (rec.kind !== 'score' || !rec.el) return;
+      if (rec.gain && rec.on) { rec.gain.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.07); setTimeout(() => { advance(); trackVolume(0.3); }, 320); } else advance();
+    },
+    async setSoundtrack(file) {
+      if (!file || !(/^audio\//.test(file.type) || /\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|webm)$/i.test(file.name))) return { ok: false };
+      let saved = true; try { await store.set('score', { blob: file, name: file.name }); } catch (e) { saved = false; }
+      useFile(URL.createObjectURL(file), file.name, file.name + '|' + file.size); return { ok: true, saved };
+    },
+    async clearSoundtrack() { try { await store.del('score'); } catch (e) {} useScore(); },
     tension(v) { mus.tensionT = Math.max(0, Math.min(1, v)); },
     setVolume(o) {
       if (o.sfx != null) vol.sfx = o.sfx; if (o.music != null) vol.music = o.music;
       if (!ctx) return; const t = ctx.currentTime;
-      sfxBus.gain.setTargetAtTime(vol.sfx * 0.7, t, 0.05); musBus.gain.setTargetAtTime(vol.music * 0.55, t, 0.05);
+      sfxBus.gain.setTargetAtTime(vol.sfx * 0.7, t, 0.05); musBus.gain.setTargetAtTime(vol.music * 0.55, t, 0.05); trackVolume();
       if (vol.music <= 0.01) S.music(false); else if (on && S.wantMusic) S.music(true);
     },
     get volume() { return { ...vol }; },
@@ -170,7 +259,19 @@
     set enabled(v) { on = v; if (!v) { S.ambient(false); if (ctx) S.music(false); } }, get enabled() { return on; },
     unlock() { ensure(); },
   };
-  document.addEventListener('visibilitychange', () => { if (!ctx) return; try { if (document.hidden) ctx.suspend(); else ctx.resume(); } catch (e) {} });
+  document.addEventListener('visibilitychange', () => {
+    if (!ctx) return; try { if (document.hidden) ctx.suspend(); else ctx.resume(); } catch (e) {}
+    if (rec.el && rec.on) { try { if (document.hidden) { savePos(); rec.el.pause(); } else { const p = rec.el.play(); if (p && p.catch) p.catch(() => {}); } } catch (e) {} }
+  });
+  window.addEventListener('pagehide', savePos);
+  // a browser may refuse to start a recording outside a tap; the next tap or key press starts it
+  const kick = () => { if (rec.on && rec.el && rec.el.paused && !document.hidden) { try { const p = rec.el.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {} } };
+  document.addEventListener('pointerdown', kick, true); document.addEventListener('keydown', kick, true);
+  // a file chosen on an earlier visit, or else the original score
+  (async () => {
+    let kept = null; try { kept = await store.get('score'); } catch (e) {}
+    if (kept && kept.blob) useFile(URL.createObjectURL(kept.blob), kept.name || 'soundtrack', (kept.name || '') + '|' + kept.blob.size); else useScore();
+  })();
   // never let audio break the game
   for (const k of Object.keys(S)) { const d = Object.getOwnPropertyDescriptor(S, k); if (typeof d.value === 'function') { const f = d.value; S[k] = function () { try { return f.apply(S, arguments); } catch (e) { console.warn('sfx', e); } }; } }
   G.SFX = S;

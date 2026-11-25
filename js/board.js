@@ -14,6 +14,11 @@
   let cv, ctx, world, smp, statics, paths, regionPaths, tint, tintKey = '', riverPaths = [], cloudPat = null, puffs = [], clouds = [], ships = [], flocks = [], lastT = 0;
   let ownerPrev = null, armPrev = [], popT = [], popDir = [], motes = [];
   const TS = 0.7; // tint cache scale
+  // Phones and tablets: the same picture, painted more cheaply (see mips, token sprites, the ambient frame rate)
+  const LITE = (window.matchMedia && matchMedia('(pointer: coarse)').matches) || Math.min(screen.width, screen.height) < 700;
+  let mips = [], tintLo = null, lastDraw = 0, base = null, bctx = null, baseKey = '', keySeen = '';
+  const sprites = new Map(); let spriteTs = 0, spriteDpr = 0, tsLast = 0, tsSince = 0;
+  const gov = { prev: 0, sum: 0, n: 0, bad: 0, hold: 0, base: 0, q0: 1, locked: false };
   const SH = G.SHEET && G.SHEET.on ? G.SHEET : null;          // the sea, border, paper and table round the user's map
   const LIFE = () => (G.LIFE && G.LIFE.ready ? G.LIFE : null);
   const VIEW_H = 0.52;                                        // on a wide screen the home view shows this much of the map's height
@@ -24,6 +29,12 @@
     paths = world.borders.terrPaths.map(p => p.path);
     regionPaths = D.REGIONS.map(r => { const p = new Path2D(); TERR.forEach((t, i) => { if (t.region === r.id) p.addPath(paths[i]); }); return p; });
     tint = document.createElement('canvas'); tint.width = Math.round(W * TS); tint.height = Math.round(H * TS);
+    tintLo = document.createElement('canvas'); tintLo.width = Math.round(tint.width / 2); tintLo.height = Math.round(tint.height / 2);
+    // Smaller copies of the map, each half the last. Seen from afar the frame samples the one nearest
+    // its own size, instead of squeezing fifteen million pixels into a phone screen sixty times a second.
+    mips = [{ c: statics, s: statics.width / W }];
+    for (let cur = statics; cur.width > 1300;) { const m = document.createElement('canvas'); m.width = Math.round(cur.width / 2); m.height = Math.round(cur.height / 2); const x = m.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(cur, 0, 0, m.width, m.height); mips.push({ c: m, s: m.width / W }); cur = m; }
+    if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', () => { sprites.clear(); B.dirty = true; });
     if (G.LIFE && world.custom) G.LIFE.init(world, smp); else buildLife();
     buildMini();
     resize(); window.addEventListener('resize', resize); bindInput(); requestAnimationFrame(loop);
@@ -33,7 +44,7 @@
   function resize() {
     const r = cv.parentElement.getBoundingClientRect();
     const wasHome = B.homeZ && Math.abs(B.cam.z - B.homeZ) < B.homeZ * 0.012;
-    B.dpr = Math.min(window.devicePixelRatio || 1, 2); B.w = Math.max(50, r.width); B.h = Math.max(50, r.height);
+    B.dpr = Math.min(window.devicePixelRatio || 1, 2) * (B.q || 1); B.w = Math.max(50, r.width); B.h = Math.max(50, r.height);
     cv.width = Math.round(B.w * B.dpr); cv.height = Math.round(B.h * B.dpr); cv.style.width = B.w + 'px'; cv.style.height = B.h + 'px';
     const first = !B.homeZ;
     if (SH) {
@@ -113,6 +124,7 @@
       c.globalAlpha = 0.7; c.lineWidth = 6; c.stroke(paths[i]); c.restore();
     }
     c.globalAlpha = 1;
+    const lo = tintLo.getContext('2d'); lo.clearRect(0, 0, tintLo.width, tintLo.height); lo.imageSmoothingQuality = 'high'; lo.drawImage(tint, 0, 0, tintLo.width, tintLo.height);
   }
 
   /* ---------- tokens ---------- */
@@ -144,6 +156,17 @@
     c.fillStyle = pop > 0.05 ? (dir > 0 ? '#fff0b8' : '#ffc2b2') : '#fff6e0'; c.fillText(String(n), px + pw / 2 + 4 * s, y + 1 * s);
     c.restore();
     drawShield(c, x - 8 * s, y, 25 * s, p, state === 'sel' ? '#ffd36a' : state === 'target' ? '#ff5a3a' : state === 'move' ? '#ffe28a' : null);
+  }
+
+  // A token at rest is painted once into a small sprite and stamped each frame. Its blurred shadows
+  // and the shield art are far too slow to redo for sixty-four tokens on every frame of a phone.
+  function tokenSprite(p, n, state, s) {
+    const key = p.faction + '|' + n + '|' + (state || ''); let sp = sprites.get(key); if (sp) return sp;
+    if (sprites.size > 180) sprites.clear();
+    const d = B.dpr, ox = 26 * s + 16, oy = 18 * s + 16, w = ox + 36 * s + 12, h = oy + 20 * s + 12;
+    const c = document.createElement('canvas'); c.width = Math.ceil(w * d); c.height = Math.ceil(h * d);
+    const x = c.getContext('2d'); x.setTransform(d, 0, 0, d, 0, 0); x.imageSmoothingQuality = 'high'; drawToken(x, ox, oy, s, p, n, state, 0, 0);
+    sp = { c, ox, oy, w: c.width / d, h: c.height / d }; sprites.set(key, sp); return sp;
   }
 
   /* ---------- effects ---------- */
@@ -256,18 +279,41 @@
   }
 
   /* ---------- frame ---------- */
-  function loop(tm) { requestAnimationFrame(loop); step(tm); }
+  function loop(tm) { requestAnimationFrame(loop); govern(tm); step(tm); }
+  // Safety net for slow phones. If frames keep arriving late the map is painted at a lower resolution;
+  // if that buys nothing (the browser is simply capping the rate) the full resolution comes back for good.
+  function govern(tm) {
+    if (!LITE || gov.locked) return; const d = tm - gov.prev; gov.prev = tm;
+    if (!G.GAME.S || document.hidden || d <= 0 || d > 250 || tm < gov.hold) { gov.sum = gov.n = 0; return; }
+    gov.sum += d; if (++gov.n < 90) return; const avg = gov.sum / gov.n; gov.sum = gov.n = 0;
+    if (gov.base) {
+      if (avg > gov.base * 0.87) { B.q = gov.q0; gov.locked = true; resize(); } else if (B.q <= 0.7) gov.locked = true;
+      gov.base = 0; gov.bad = 0; gov.hold = tm + 1500; return;
+    }
+    if (avg <= 21.5) { gov.bad = 0; return; }
+    if (++gov.bad >= 2) { gov.base = avg; gov.q0 = B.q || 1; B.q = gov.q0 > 0.9 ? 0.8 : 0.66; gov.bad = 0; gov.hold = tm + 1200; resize(); }
+  }
   function step(tm) {
     const S = G.GAME.S;
     if (B.camT) { const k = clamp((tm - B.camT.t0) / B.camT.ms, 0, 1), e = B.camT.ease === 'inout' ? (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2) : 1 - Math.pow(1 - k, 3); for (const q of ['x', 'y', 'z']) B.cam[q] = B.camT.from[q] + (B.camT.to[q] - B.camT.from[q]) * e; clampCam(); if (k >= 1) B.camT = null; B.dirty = true; }
     if (B.pad !== B.padT) { B.pad += (B.padT - B.pad) * 0.16; if (Math.abs(B.pad - B.padT) < 0.6) B.pad = B.padT; clampCam(); B.dirty = true; }
     const animating = B.fx.length || B.camT || B.vel || B.zoomT || B.keys.size || B.sel >= 0 || B.targets.size || B.arrow || B.shakeT || B.actionable.size || (B.life && S);
-    if (!B.dirty && !animating) { lastT = 0; return; } B.dirty = false;
+    if (!B.dirty && !animating) { lastT = 0; return; }
+    // on a phone the ambient life alone runs at half rate; anything the player does is drawn at once
+    if (LITE && !B.dirty && !(B.fx.length || B.camT || B.vel || B.zoomT || B.keys.size || B.shakeT || B.arrow) && tm - lastDraw < 30 && tm >= lastDraw) return;
+    B.dirty = false; lastDraw = tm;
     const dt = clamp(lastT ? (tm - lastT) / 1000 : 0.016, 0, 0.1); lastT = tm;
     if (B.keys.size) panKeys(dt);
     if (B.zoomT) { const zt = B.zoomT, nz = B.cam.z + (zt.z - B.cam.z) * (1 - Math.exp(-dt * 16)); const done = Math.abs(nz - zt.z) < zt.z * 0.002; zoomAt(zt.sx, zt.sy, done ? zt.z : nz, true); if (done) B.zoomT = null; }
     if (B.vel) { B.cam.x -= B.vel.x * dt / B.cam.z; B.cam.y -= B.vel.y * dt / B.cam.z; clampCam(); const d = Math.exp(-dt * 5.5); B.vel.x *= d; B.vel.y *= d; if (Math.hypot(B.vel.x, B.vel.y) < 12) B.vel = null; }
     const t0 = performance.now(); draw(tm, dt, S); B.ms = performance.now() - t0;
+  }
+  function paintStill(g, view, z, dpr, S) {
+    if (SH) SH.drawBase(g, view, z, dpr);
+    const need = z * dpr; let mip = mips[0]; for (const m of mips) if (m.s >= need * 0.94) mip = m;
+    g.drawImage(mip.c, 0, 0, W, H);
+    if (S) g.drawImage(need < TS * 0.53 ? tintLo : tint, 0, 0, W, H);
+    if (SH) SH.drawFrame(g);
   }
   function draw(tm, dt, S) {
     const dpr = B.dpr, c = B.cam, z = c.z, t = tm / 1000;
@@ -275,12 +321,22 @@
     if (B.shakeT) { const k = (tm - B.shakeT.t0) / B.shakeT.ms; if (k >= 1) B.shakeT = null; else { const a = B.shakeT.amp * (1 - k); sx = (Math.random() - 0.5) * a; sy = (Math.random() - 0.5) * a; } }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, B.w, B.h);
     ctx.setTransform(dpr * z, 0, 0, dpr * z, dpr * (B.w / 2 - c.x * z + sx), dpr * (B.h / 2 - c.y * z + sy));
-    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = LITE ? 'medium' : 'high';
     const view = { x0: c.x - B.w / (2 * z) - 8 / z, y0: c.y - B.h / (2 * z) - 8 / z, x1: c.x + B.w / (2 * z) + 8 / z, y1: c.y + B.h / (2 * z) + 8 / z, z, home: B.homeZ };
-    if (SH) SH.drawBase(ctx, view, z, dpr);
-    ctx.drawImage(statics, 0, 0, W, H);
-    if (S) { rebuildTint(S); ctx.drawImage(tint, 0, 0, W, H); }
-    if (SH) SH.drawFrame(ctx);
+    // Everything that does not move (table, paper, sea, the map, the owners' colours, the border) is
+    // painted straight to the screen while the camera travels. Once the camera rests it is painted once
+    // into a picture the size of the screen, and each frame after that starts from a single copy of it.
+    if (S) rebuildTint(S);
+    const key = sx || sy ? '' : [c.x, c.y, z, cv.width, cv.height, tintKey, SH ? SH.rev : 0, S ? 1 : 0].join('|');
+    if (key && key === keySeen) {
+      if (baseKey !== key) {
+        if (!base) { base = document.createElement('canvas'); bctx = base.getContext('2d'); }
+        if (base.width !== cv.width || base.height !== cv.height) { base.width = cv.width; base.height = cv.height; }
+        bctx.setTransform(1, 0, 0, 1, 0, 0); bctx.clearRect(0, 0, base.width, base.height); bctx.setTransform(ctx.getTransform());
+        bctx.imageSmoothingEnabled = true; bctx.imageSmoothingQuality = 'high'; paintStill(bctx, view, z, dpr, S); baseKey = key;
+      }
+      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(base, 0, 0); ctx.restore();
+    } else { keySeen = key; paintStill(ctx, view, z, dpr, S); }
     const px = 1 / z; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     const life = B.life && S ? LIFE() : null;
     if (life) { life.water(ctx, view, t, dt, S); life.ground(ctx, view, t, dt, S); life.sky(ctx, view, t, dt); }
@@ -327,6 +383,9 @@
       ctx.save(); ctx.translate(x, y - 15 * ts - fs * 0.55); ctx.rotate(T.ang || 0); ctx.font = `italic ${fs}px ${G.ATLAS.FONT}`; if ('letterSpacing' in ctx) ctx.letterSpacing = '0.2px';
       ctx.strokeStyle = 'rgba(239,223,186,0.88)'; ctx.lineWidth = 3; ctx.strokeText(T.name, 0, 0); ctx.fillStyle = i === B.sel ? '#5a1d08' : INK; ctx.fillText(T.name, 0, 0); ctx.restore();
     }
+    // sprites follow the zoom: while it is changing they are stretched, and repainted sharp once it settles
+    if (ts !== tsLast) { tsLast = ts; tsSince = tm; }
+    if (spriteDpr !== dpr || !spriteTs || (ts !== spriteTs && (tm - tsSince > 140 || tm < tsSince || Math.abs(ts / spriteTs - 1) > 0.3))) { sprites.clear(); spriteTs = ts; spriteDpr = dpr; }
     let changed = 0; for (let i = 0; i < NT; i++) if (armPrev[i] !== S.armies[i]) changed++;
     for (let i = 0; i < NT; i++) if (armPrev[i] !== S.armies[i]) { if (armPrev[i] != null && changed <= 8) { popT[i] = tm; popDir[i] = S.armies[i] > armPrev[i] ? 1 : -1; } armPrev[i] = S.armies[i]; }
     for (let i = 0; i < NT; i++) {
@@ -336,7 +395,8 @@
       let s = ts * (i === B.hover ? 1.09 : 1); const pf = B.fx.find(f => f.k === 'ring' && f.t === i); if (pf) { const k = (tm - pf.t0) / pf.dur; if (k >= 0 && k < 1) s *= 1 + 0.2 * Math.sin(k * Math.PI); }
       if (!st && B.actionable.has(i)) { ctx.save(); ctx.translate(x + 2 * s, y + 1 * s); ctx.rotate(tm / 2600); ctx.setLineDash([5 * s, 5 * s]); ctx.strokeStyle = `rgba(255,226,140,${0.45 + 0.35 * pulse})`; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.arc(0, 0, 25 * s, 0, 6.283); ctx.stroke(); ctx.restore(); }
       const pk = popT[i] ? (tm - popT[i]) / 420 : 1; const pop = pk < 1 ? Math.sin(pk * Math.PI) : 0;
-      drawToken(ctx, x + 6 * s, y, s, S.players[o], S.armies[i], st, pop, popDir[i] || 0);
+      if (s !== ts || pop > 0.02) drawToken(ctx, x + 6 * s, y, s, S.players[o], S.armies[i], st, pop, popDir[i] || 0);
+      else { const sp = tokenSprite(S.players[o], S.armies[i], st, spriteTs), k = ts / spriteTs; ctx.drawImage(sp.c, Math.round((x + 6 * s - sp.ox * k) * dpr) / dpr, Math.round((y - sp.oy * k) * dpr) / dpr, sp.w * k, sp.h * k); }
       if (st === 'target' || st === 'move') drawBadge(x + 6 * s + 16 * s, y - 15 * s - 2.5 * Math.sin(tm / 260 + i), s, st);
     }
     const keep = [];

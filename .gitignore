@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 .DS_Store
 Thumbs.db
+# recorded soundtracks stay on this machine
+assets/*.mp3
+assets/*.m4a
+assets/*.ogg

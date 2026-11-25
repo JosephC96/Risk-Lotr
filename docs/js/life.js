@@ -543,9 +543,10 @@
       c.save(); c.translate(p[0] + 18 * s, p[1] + 26 * s); c.rotate(a); c.scale(s, s); beast(fl, 'rgba(20,12,6,0.22)', null); c.restore();
       c.save(); c.translate(p[0], p[1]); c.rotate(a); c.scale(s, s); beast(fl, '#2a2622', '#0e0c0a'); c.restore(); } }
     // cloud shadows drifting over the sheet, then the clouds
-    if (!cloudPat) cloudPat = c.createPattern(G.ATLAS.cloudShadowCanvas(256), 'repeat');
+    // the shadow texture as plain darkness with alpha: the same result as multiplying, without a blend mode
+    if (!cloudPat) { const cs = G.ATLAS.cloudShadowCanvas(256), x = cs.getContext('2d'), id = x.getImageData(0, 0, 256, 256), d = id.data; for (let i = 0; i < d.length; i += 4) { d[i + 3] = 255 - d[i]; d[i] = d[i + 1] = d[i + 2] = 0; } x.putImageData(id, 0, 0); cloudPat = c.createPattern(cs, 'repeat'); }
     const k = 1150 / 256, ox = (t * 14) % (256 * k), oy = (t * 3) % (256 * k), pw = P.x1 - P.x0, ph = P.y1 - P.y0;
-    c.save(); c.beginPath(); c.rect(P.x0, P.y0, pw, ph); c.clip(); c.globalCompositeOperation = 'multiply'; c.globalAlpha = 0.62; c.translate(ox, oy); c.scale(k, k); c.fillStyle = cloudPat; c.fillRect((P.x0 - ox) / k - 1, (P.y0 - oy) / k - 1, pw / k + 2, ph / k + 2); c.restore();
+    c.save(); c.beginPath(); c.rect(P.x0, P.y0, pw, ph); c.clip(); c.globalAlpha = 0.62; c.translate(ox, oy); c.scale(k, k); c.fillStyle = cloudPat; c.fillRect((P.x0 - ox) / k - 1, (P.y0 - oy) / k - 1, pw / k + 2, ph / k + 2); c.restore();
     const zk = clamp(1.3 - (z / (view.home || z) - 1) * 0.8, 0.22, 1);
     c.save(); c.beginPath(); c.rect(P.x0, P.y0, pw, ph); c.clip();
     for (const cl of clouds) {

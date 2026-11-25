@@ -884,6 +884,10 @@
         <div class="vol"><label for="s-mus">Music</label><input type="range" id="s-mus" min="0" max="100" value="${Math.round(v.music * 100)}"><output>${Math.round(v.music * 100)}</output></div>
         <div class="vol"><label for="s-sfx">Effects</label><input type="range" id="s-sfx" min="0" max="100" value="${Math.round(v.sfx * 100)}"><output>${Math.round(v.sfx * 100)}</output></div>
       </div>
+      <div class="track"><span class="track-l">Soundtrack</span><span class="track-n" id="s-track"></span>
+        <span class="track-b"><button type="button" class="btn sm" id="s-next" hidden>Next piece</button><button type="button" class="btn sm" id="s-pick">Choose a file</button><button type="button" class="btn sm" id="s-unpick" hidden></button></span>
+        <input type="file" id="s-file" accept="audio/*,.mp3,.m4a,.ogg,.opus,.wav,.flac" hidden>
+        <p class="track-h">The original score plays its pieces in a new order every time. A file of your own plays on a loop instead; it stays in this browser on this device and is never uploaded.</p></div>
       <div class="opts">
       <div class="opt"><label for="s-speed">AI speed</label><select id="s-speed">${[['slow', 'Relaxed'], ['normal', 'Normal'], ['fast', 'Fast'], ['instant', 'Instant']].map(([k, l]) => `<option value="${k}" ${U.settings.speed === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="opt"><label for="s-life">Clouds and map animations</label><select id="s-life"><option value="on" ${U.settings.life ? 'selected' : ''}>On</option><option value="off" ${U.settings.life ? '' : 'selected'}>Off</option></select></div></div>
@@ -897,6 +901,22 @@
     showModal({ title: 'Menu', sub: 'The game saves automatically at the start of every turn', body, buttons });
     const bindVol = (id, k) => { const e = $(id); e.oninput = () => { U.settings.vol[k] = e.value / 100; e.nextElementSibling.textContent = e.value; SFX.setVolume(U.settings.vol); saveSettings(); }; e.onchange = () => { if (k === 'sfx') SFX.coin(); }; };
     bindVol('#s-mus', 'music'); bindVol('#s-sfx', 'sfx');
+    const showTrack = note => {
+      const st = SFX.soundtrack, n = $('#s-track'); if (!n) return;
+      n.textContent = note || (!st ? 'Built-in score' : st.kind === 'score' ? `Original score · piece ${st.piece} of ${st.pieces}` : st.name);
+      $('#s-next').hidden = !(st && st.kind === 'score'); const u = $('#s-unpick'); u.hidden = !(st && st.kind === 'file'); u.textContent = SFX.hasScore() ? 'Use the original score' : 'Use the built-in score';
+    };
+    showTrack();
+    $('#s-next').onclick = () => { SFX.nextPiece(); setTimeout(showTrack, 450); };
+    $('#s-pick').onclick = () => $('#s-file').click();
+    $('#s-file').onchange = async e => {
+      const f = e.target.files && e.target.files[0]; if (!f) return; showTrack('Loading…');
+      const r = await SFX.setSoundtrack(f); e.target.value = '';
+      if (!r || !r.ok) { showTrack('That file is not audio this browser can play'); return; }
+      showTrack(); if (!r.saved) $('#s-track').textContent = f.name + ' (this visit only: the browser would not store it)';
+      if (GM.S && U.settings.sound) startMusic();
+    };
+    $('#s-unpick').onclick = async () => { await SFX.clearSoundtrack(); showTrack(); if (GM.S && U.settings.sound) startMusic(); };
   }
 
   function onVictory(w) {
