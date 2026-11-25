@@ -34,7 +34,10 @@
 
   /* ---------- host ---------- */
   function publicRoom() {
-    const r = N.room; return { code: N.code, hostName: r.hostName, started: N.started, seats: r.seats.map(s => ({ faction: s.faction, kind: s.kind, diff: s.diff, name: s.name || '', taken: !!s.cid, online: s.kind === 'host' ? true : !!s.online, ai: !!s.ai })) };
+    const r = N.room;
+    const teams = r.cfg?.mode === 'bastions' && r.cfg.teams;
+    const campaignFormat = r.cfg?.mode === 'campaign' ? r.cfg.campaignFormat : null;
+    return { code: N.code, hostName: r.hostName, started: N.started, teams, campaignFormat, seats: r.seats.map(s => ({ faction: s.faction, kind: s.kind, diff: s.diff, name: s.name || '', taken: !!s.cid, online: s.kind === 'host' ? true : !!s.online, ai: !!s.ai })) };
   }
   function sendLobby() {
     const pub = publicRoom();

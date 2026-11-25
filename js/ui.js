@@ -1,6 +1,7 @@
 /* UI controller: menus, HUD, turn flow, battles, cards, hot-seat, saves */
 (function (G) {
   const D = G.DATA, GM = G.GAME, AI = G.AI, SFX = G.SFX;
+  const C = G.CAMPAIGN;
   const NT = D.TERR.length;
   const $ = s => document.querySelector(s);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -112,7 +113,7 @@
     hideBattle(); closeModal();
     menuFx(); SFX.tension(0); stopFireworks();
     const R = D.RULES || {}, official = !!R.startArmies;
-    const cfg = Object.assign({ mode: 'classic', deal: 'random', fortify: official ? 'connected' : 'adjacent', cardMode: official ? 'fixed' : 'progressive', neutral: true, seats: ['human', 'normal', 'normal', 'off', 'normal'] }, JSON.parse(store.get(MENU_KEY) || '{}'));
+    const cfg = Object.assign({ mode: 'classic', deal: 'random', fortify: official ? 'connected' : 'adjacent', cardMode: official ? 'fixed' : 'progressive', neutral: true, teams: false, campaignFormat: 'ring', seats: ['human', 'normal', 'normal', 'off', 'normal'] }, JSON.parse(store.get(MENU_KEY) || '{}'));
     const hasSave = !!store.get(SAVE_KEY);
     const hosting = NET.savedHosting(), lastRoom = NET.lastRoom();
     const modeCard = (k, ic, t, s) => `<button class="mode ${cfg.mode === k ? 'on' : ''}" data-mode="${k}">${ic}<b>${t}</b><span>${s}</span></button>`;
@@ -127,9 +128,11 @@
           </div>
           <div class="lbl">Game mode</div>
           <div class="modes">
-            ${modeCard('classic', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>', 'Classic', 'World domination: eliminate every rival realm.')}
+            ${modeCard('classic', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>', 'Classic', 'Conquer the entire map.')}
             ${modeCard('missions', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3h9l3 3v15H6z"/><path d="M9 10h6M9 14h6"/><circle cx="16" cy="18" r="3" fill="currentColor" fill-opacity=".3"/></svg>', 'Missions', 'Each realm is dealt a secret objective.')}
             ${modeCard('quick', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>', 'Quick', `Hold ${D.QUICK_TARGET || 26} territories, or the most after 12 rounds.`)}
+            ${modeCard('bastions', ICON.tower, 'Bastions', `Hold fortified sites to earn renown over ${D.BASTION_ROUNDS} rounds.`)}
+            ${modeCard('campaign', ICON.flag, 'Campaigns', 'Carry the Ring to Mount Doom, escort a convoy or race for waypoints.')}
           </div>
           <div class="lbl">Rule options</div>
           <div class="opts">
@@ -137,6 +140,8 @@
             <div class="opt"><label for="o-fort">Fortify move</label>${sel('o-fort', [['connected', 'Through connected territories'], ['adjacent', 'Adjacent only']], cfg.fortify)}</div>
             <div class="opt"><label for="o-cards">Card trade-ins</label>${sel('o-cards', [['fixed', 'By kind of set (4, 6, 8, 10)'], ['progressive', 'Rising (4, 6, 8, 10, 12, 15…)']], cfg.cardMode)}</div>
             <div class="opt"><label for="o-neutral">Two players</label>${sel('o-neutral', [['yes', 'With a neutral army'], ['no', 'No neutral army']], cfg.neutral ? 'yes' : 'no')}</div>
+            <div class="opt" id="bastion-opt" hidden><label for="o-teams">Bastion sides</label>${sel('o-teams', [['no', 'Free for all'], ['yes', 'Two teams of two']], cfg.teams ? 'yes' : 'no')}</div>
+            <div class="opt" id="campaign-opt" hidden><label for="o-campaign">Campaign format</label>${sel('o-campaign', [['ring', 'Ring Quest'], ['race', 'Waypoint Race'], ['escort', 'Escort vs Raiders']], cfg.campaignFormat)}</div>
           </div>
         </div>
         <div class="r">
@@ -158,33 +163,77 @@
       </div>`;
     $('#screen-menu').hidden = false;
     const M = $('#menuMount');
-    M.querySelectorAll('.mode').forEach(b => b.onclick = () => { M.querySelectorAll('.mode').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
-    D.FACTIONS.forEach((f, i) => { $('#seat' + i).onchange = e => e.target.closest('.seat').classList.toggle('off', e.target.value === 'off'); });
+    const chosenMode = () => M.querySelector('.mode.on').dataset.mode;
+    const teamsOn = () => chosenMode() === 'bastions' && $('#o-teams').value === 'yes';
+    const campaignSides = () => chosenMode() === 'campaign' && $('#o-campaign').value !== 'race';
+    const getOptions = () => ({ mode: chosenMode(), deal: $('#o-deal').value, fortify: $('#o-fort').value,
+      cardMode: $('#o-cards').value, neutral: $('#o-neutral').value === 'yes', teams: teamsOn(), campaignFormat: $('#o-campaign').value });
+    const readSeats = () => D.FACTIONS.map((_, i) => $('#seat' + i).value);
+    const activeSeats = seats => seats.map((v, i) => ({ v, i })).filter(x => x.v !== 'off');
+    const menuNote = $('#mNote'), defaultNote = menuNote.textContent;
+    function updateTeamOptions() {
+      $('#bastion-opt').hidden = chosenMode() !== 'bastions';
+      $('#campaign-opt').hidden = chosenMode() !== 'campaign';
+      $('#o-neutral').disabled = chosenMode() === 'campaign';
+      menuNote.style.color = '';
+      const active = activeSeats(readSeats());
+      if (campaignSides()) {
+        const format = $('#o-campaign').value;
+        menuNote.textContent = C.validSize(format, active.length)
+          ? C.teamNames(format).map((name, i) => `${name} · ${active.filter((_, n) => n % 2 === i).map(x => D.FACTIONS[x.i].short).join(' & ')}`).join(' / ')
+          : 'This campaign requires two or four realms.';
+      } else if (!teamsOn()) menuNote.textContent = defaultNote;
+      else if (active.length !== 4) menuNote.textContent = 'Choose four realms to form two teams.';
+      else menuNote.textContent = D.TEAM_NAMES.map((name, i) =>
+        `${name} · ${[active[i], active[i + 2]].map(x => D.FACTIONS[x.i].short).join(' & ')}`).join(' / ');
+    }
+    function validTeams(active) {
+      if (campaignSides() && !C.validSize($('#o-campaign').value, active.length)) {
+        menuNote.textContent = 'This campaign requires two or four realms.';
+        menuNote.style.color = '#ff9b85';
+        return false;
+      }
+      if (!teamsOn() || active.length === 4) return true;
+      menuNote.textContent = 'Choose exactly four realms to play in teams.';
+      menuNote.style.color = '#ff9b85';
+      return false;
+    }
+    M.querySelectorAll('.mode').forEach(b => b.onclick = () => {
+      M.querySelectorAll('.mode').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      updateTeamOptions();
+    });
+    $('#o-teams').onchange = updateTeamOptions;
+    $('#o-campaign').onchange = updateTeamOptions;
+    D.FACTIONS.forEach((_, i) => { $('#seat' + i).onchange = e => {
+      e.target.closest('.seat').classList.toggle('off', e.target.value === 'off');
+      updateTeamOptions();
+    }; });
+    updateTeamOptions();
     $('#mStart').onclick = () => {
       SFX.unlock();
-      const seats = D.FACTIONS.map((f, i) => $('#seat' + i).value);
-      const active = seats.map((v, i) => ({ v, i })).filter(x => x.v !== 'off');
+      const seats = readSeats(), active = activeSeats(seats);
+      if (!validTeams(active)) return;
       if (active.length < 2) { $('#mNote').textContent = 'You need at least two realms in the game.'; $('#mNote').style.color = '#ff9b85'; return; }
-      const mode = M.querySelector('.mode.on').dataset.mode;
-      const c = { mode, deal: $('#o-deal').value, fortify: $('#o-fort').value, cardMode: $('#o-cards').value, neutral: $('#o-neutral').value === 'yes', seats };
-      store.set(MENU_KEY, JSON.stringify(c));
+      const rules = getOptions();
+      store.set(MENU_KEY, JSON.stringify({ ...rules, seats }));
       U.settings.speed = $('#o-speed').value; U.settings.life = $('#o-life').value === 'on'; saveSettings(); applyLife();
       startGame({
-        mode, deal: c.deal, fortify: c.fortify, cardMode: c.cardMode, neutral: c.neutral, quickTarget: D.QUICK_TARGET || 26, quickRounds: 12,
+        ...rules, quickTarget: D.QUICK_TARGET || 26, quickRounds: 12,
         players: active.map(x => ({ faction: x.i, type: x.v === 'human' ? 'human' : 'ai', diff: x.v === 'human' ? null : x.v })),
       });
     };
     const cont = $('#mCont'); if (cont) cont.onclick = () => { SFX.unlock(); continueGame(); };
     $('#mHost').onclick = () => {
       SFX.unlock();
-      const seats = D.FACTIONS.map((f, i) => $('#seat' + i).value); const note = $('#mNote');
-      const active = seats.map((v, i) => ({ v, i })).filter(x => x.v !== 'off');
+      const seats = readSeats(), active = activeSeats(seats), note = $('#mNote');
+      if (!validTeams(active)) return;
       if (active.filter(x => x.v === 'human').length < 2) { note.textContent = 'Set at least two realms to Human: one is yours, the others are open seats for your friends.'; note.style.color = '#ff9b85'; return; }
-      const c = { mode: M.querySelector('.mode.on').dataset.mode, deal: $('#o-deal').value, fortify: $('#o-fort').value, cardMode: $('#o-cards').value, neutral: $('#o-neutral').value === 'yes', seats };
-      store.set(MENU_KEY, JSON.stringify(c));
+      const rules = getOptions();
+      store.set(MENU_KEY, JSON.stringify({ ...rules, seats }));
       U.settings.speed = $('#o-speed').value; U.settings.life = $('#o-life').value === 'on'; saveSettings(); applyLife();
       let first = true;
-      hostOnline({ mode: c.mode, deal: c.deal, fortify: c.fortify, cardMode: c.cardMode, neutral: c.neutral, quickTarget: D.QUICK_TARGET || 26, quickRounds: 12 },
+      hostOnline({ ...rules, quickTarget: D.QUICK_TARGET || 26, quickRounds: 12 },
         active.map(x => x.v === 'human' ? { faction: x.i, kind: first ? (first = false, 'host') : 'open' } : { faction: x.i, kind: 'ai', diff: x.v }));
     };
     const reo = $('#mReopen'); if (reo) reo.onclick = () => { SFX.unlock(); reopenOnline(); };
@@ -308,8 +357,9 @@
       U.running = false;
       hideBattle(); setHL({ arrow: null, src: -1, sel: -1, targets: new Set() });
       proceed();
-    } else {
-      if (isHumanTurn() && GM.mustTrade() && $('#modal').hidden) openCards(true);
+    } else if (isHumanTurn() && $('#modal').hidden) {
+      if (S.pending) openConquest();
+      else if (GM.mustTrade()) openCards(true);
     }
   }
 
@@ -368,9 +418,9 @@
       case 'attack':
         if (S.pending) return;
         if (own) {
-          if (S.armies[t] >= 2) { const tg = D.TERR[t].adj.filter(b => S.owner[b] !== me); setHL({ sel: t, src: t, targets: new Set(tg), kind: 'attack', arrow: null }); hideBattle(); refresh(); if (!tg.length) toast('This territory has no enemy neighbours.'); }
+          if (S.armies[t] >= 2) { const tg = D.TERR[t].adj.filter(b => GM.canAttack(t, b)); setHL({ sel: t, src: t, targets: new Set(tg), kind: 'attack', arrow: null }); hideBattle(); refresh(); if (!tg.length) toast('This territory has no enemy neighbours.'); }
           else { selectInfo(t); toast('You need at least 2 armies to attack from here.'); }
-        } else if (U.hl.src >= 0 && D.TERR[U.hl.src].adj.includes(t) && S.armies[U.hl.src] >= 2) {
+        } else if (U.hl.src >= 0 && GM.canAttack(U.hl.src, t)) {
           openBattle(U.hl.src, t);
         } else { selectInfo(t); barrierHint(U.hl.src, t); }
         break;
@@ -391,14 +441,14 @@
     const T = D.TERR[t], o = S.owner[t], p = o >= 0 ? S.players[o] : null;
     let extra = '', pct = -1;
     if (S.phase === 'attack' && U.hl.src >= 0 && U.hl.targets.has(t) && U.hl.kind === 'attack') {
-      pct = Math.round(AI.winP(S.armies[U.hl.src] - 1, S.armies[t]) * 100);
+      pct = Math.round(AI.winP(S.armies[U.hl.src] - 1, S.armies[t], GM.defenceBonus(t)) * 100);
       extra = `<div class="tp-odds"><div class="tp-r"><span>Chance to conquer</span><b>${pct}%</b></div><div class="ob"><i style="width:${pct}%;background-position:${-(100 - pct) * 0.6}px 0"></i></div></div>`;
     }
-    const key = [t, o, S.armies[t], pct].join(':');
+    const key = [t, o, S.armies[t], pct, GM.isBastion(t)].join(':');
     if (tip.dataset.k !== key) {
       tip.dataset.k = key; tip.style.setProperty('--fc', p ? p.color + '77' : 'transparent');
       tip.innerHTML = `<div class="tp-h">${p ? shieldSVG(p, '') : ''}<div><b>${esc(T.name)}</b><i>${D.REGIONS[T.region].name} · +${D.REGIONS[T.region].bonus}</i></div></div>
-        <div class="tp-b"><div class="tp-r"><span>${p ? esc(p.fname) : 'Unclaimed'}</span><b>${S.armies[t]} ${S.armies[t] === 1 ? 'army' : 'armies'}</b></div>${extra}</div>`;
+        <div class="tp-b"><div class="tp-r"><span>${p ? esc(p.fname) : 'Unclaimed'}</span><b>${S.armies[t]} ${S.armies[t] === 1 ? 'army' : 'armies'}</b></div>${GM.isBastion(t) ? '<div class="tp-r"><span>Bastion</span><b>+1 highest defence die</b></div>' : ''}${extra}</div>`;
     }
     const r = $('#mapwrap').getBoundingClientRect();
     let x = ev.clientX - r.left + 16, y = ev.clientY - r.top + 16;
@@ -417,7 +467,8 @@
 
   /* ---------------- battle ---------------- */
   function openBattle(a, b) {
-    setHL({ src: a, sel: b, arrow: { a, b, kind: 'attack' }, targets: new Set(D.TERR[a].adj.filter(x => GM.S.owner[x] !== GM.S.current)), kind: 'attack' });
+    if (!GM.canAttack(a, b)) return;
+    setHL({ src: a, sel: b, arrow: { a, b, kind: 'attack' }, targets: new Set(D.TERR[a].adj.filter(x => GM.canAttack(a, x))), kind: 'attack' });
     U.dice = Math.min(3, GM.S.armies[a] - 1);
     showBattle(a, b, false); refresh();
     VW().ensureVisible([a, b], $('#battle').offsetHeight + 30);
@@ -464,10 +515,11 @@
     const { a, b } = bt; const maxD = Math.min(3, S.armies[a] - 1);
     if (U.dice > maxD) U.dice = Math.max(1, maxD);
     $('#bA').textContent = S.armies[a]; $('#bD').textContent = S.armies[b];
-    const pr = AI.winP(S.armies[a] - 1, S.armies[b]);
+    const defence = GM.defenceBonus(b);
+    const pr = AI.winP(S.armies[a] - 1, S.armies[b], defence);
     const same = S.owner[b] === S.owner[a], pc = same ? 100 : Math.round(pr * 100);
     const bar = $('#bBar'); if (bar) { bar.style.width = pc + '%'; $('#bBarT').innerHTML = same ? 'Conquered' : `<b>${pc}%</b>to conquer`; }
-    $('#bOdds').innerHTML = same ? '' : `You roll up to ${Math.max(1, maxD)} · the defender rolls ${Math.min(2, S.armies[b])} ${S.armies[b] >= 2 ? 'dice' : 'die'} and wins ties`;
+    $('#bOdds').textContent = same ? '' : `You roll up to ${Math.max(1, maxD)} · the defender rolls ${Math.min(2, S.armies[b])} ${S.armies[b] >= 2 ? 'dice' : 'die'} and wins ties${defence ? ' · Bastion +1 to highest defence die' : ''}`;
     document.querySelectorAll('#dsel button').forEach(btn => { const n = +btn.dataset.n; btn.disabled = n > maxD; btn.classList.toggle('on', n === U.dice); });
     const can = GM.canAttack(a, b);
     ['#bAtk', '#bBlitz'].forEach(s => { const e = $(s); if (e) e.disabled = !can || U.busy; });
@@ -488,6 +540,14 @@
     VW().volley(res.a, res.b, res.A.length * 3, PA.light, fast ? 0 : 260); VW().volley(res.b, res.a, res.D.length * 2, PD ? PD.light : '#ddd', fast ? 60 : 380);
     if (!fast) setTimeout(() => SFX.arrows(3), 260);
     await sleep(fast ? 480 : 1050);
+    if (res.defence && wd[0]) {
+      const bonus = document.createElement('span');
+      bonus.className = 'die-bonus';
+      bonus.textContent = '+1';
+      bonus.title = 'Bastion defence bonus';
+      wd[0].appendChild(bonus);
+      setTimeout(() => bonus.remove(), fast ? 720 : 1400);
+    }
     res.pairs.forEach((win, i) => { if (wa[i]) wa[i].classList.add(win ? 'won' : 'lost'); if (wd[i]) wd[i].classList.add(win ? 'lost' : 'won'); });
     const bA = $('#bA'), bD = $('#bD');
     const S = GM.S;
@@ -531,7 +591,7 @@
   function openConquest() {
     const S = GM.S, pd = S.pending; const p = curP();
     const body = document.createElement('div');
-    body.innerHTML = `<p class="hint" style="text-align:center">Move in at least as many armies as the dice you rolled (${pd.min}). One must stay behind in ${esc(D.TERR[pd.from].name)}.</p>
+    body.innerHTML = `<p class="hint" style="text-align:center">Move at least ${pd.min} surviving attackers into the territory. One army must stay behind in ${esc(D.TERR[pd.from].name)}.</p>
       <div class="bigN" id="cqN">${pd.max}</div>
       <div class="slider"><button class="btn sm" id="cqMin">Min</button><input type="range" id="cqR" min="${pd.min}" max="${pd.max}" value="${pd.max}"><button class="btn sm" id="cqMax">Max</button></div>
       <div class="row" style="font-size:13px;color:var(--ivory-dim)"><span id="cqFrom"></span><span id="cqTo" style="text-align:right"></span></div>`;
@@ -543,26 +603,67 @@
     const S = GM.S, pd = S.pending; if (!pd) return;
     GM.moveAfterConquest(n);
     VW().moveFx(pd.from, pd.to, curP().light); SFX.march();
+    if (S.winner) { refresh(); return; }
     const nxt = S.armies[pd.to] >= 2 ? pd.to : (S.armies[pd.from] >= 2 ? pd.from : -1);
-    if (nxt >= 0) { const tg = D.TERR[nxt].adj.filter(b => S.owner[b] !== S.current); setHL({ sel: nxt, src: nxt, targets: new Set(tg), kind: 'attack', arrow: null }); }
+    if (nxt >= 0) { const tg = D.TERR[nxt].adj.filter(b => GM.canAttack(nxt, b)); setHL({ sel: nxt, src: nxt, targets: new Set(tg), kind: 'attack', arrow: null }); }
     else setHL({ sel: pd.to, src: -1, targets: new Set(), kind: null, arrow: null });
     refresh();
-    if (S.phase === 'reinforce' && S.returnToAttack) { toast('You hold 6 or more cards: trade in until you have 4 or fewer.'); openCards(true); }
+    if (S.phase === 'reinforce' && S.returnToAttack) { toast(`You hold ${curP().cards.length} cards. Trade sets until you have four or fewer.`); openCards(true); }
   }
 
   /* ---------------- fortify ---------------- */
   function openFortify(a, b) {
     const S = GM.S; const max = S.armies[a] - 1;
+    const ring = !!S.campaign?.ring;
     setHL({ arrow: { a, b, kind: 'move' } });
     const body = document.createElement('div');
-    body.innerHTML = `<p class="hint" style="text-align:center">You get one fortify move per turn. Confirming it ends your turn.</p>
+    body.innerHTML = `<p class="hint" style="text-align:center">${ring ? 'Move your armies before resolving the quest.' : 'You get one fortify move per turn. Confirming it ends your turn.'}</p>
       <div class="bigN" id="fN">${max}</div>
       <div class="slider"><button class="btn sm" id="fMin">1</button><input type="range" id="fR" min="1" max="${max}" value="${max}"><button class="btn sm" id="fMax">${max}</button></div>`;
     showModal({ title: 'Fortify', sub: `${esc(D.TERR[a].name)} → ${esc(D.TERR[b].name)}`, body, buttons: [
       { label: 'Cancel', onClick: () => { closeModal(); setHL({ arrow: null }); } },
-      { label: 'Move and end turn', cls: 'gold', onClick: async () => { const n = +$('#fR').value; closeModal(); GM.fortify(a, b, n); VW().moveFx(a, b, curP().light); SFX.march(); setHL({ arrow: null, src: -1, targets: new Set() }); refresh(); await sleep(500); endTurnHuman(); } },
+      { label: ring ? 'Move armies' : 'Move and end turn', cls: 'gold', onClick: async () => {
+        const n = +$('#fR').value;
+        closeModal();
+        if (!GM.fortify(a, b, n)) return;
+        VW().moveFx(a, b, curP().light);
+        SFX.march();
+        setHL({ arrow: null, src: -1, targets: new Set() });
+        refresh();
+        await sleep(500);
+        if (GM.S !== S || !isHumanTurn()) return;
+        if (ring && C.ringActions(S).length) { openRingOrders(); return; }
+        GM.marchConvoy();
+        if (!S.winner) endTurnHuman();
+      } },
     ] });
     const R = $('#fR'); R.oninput = () => $('#fN').textContent = R.value; $('#fMin').onclick = () => { R.value = 1; R.oninput(); }; $('#fMax').onclick = () => { R.value = max; R.oninput(); };
+  }
+
+  function openRingOrders() {
+    const S = GM.S, c = S.campaign, actions = C.ringActions(S);
+    if (!isHumanTurn() || !actions.length) return;
+    const labels = { travel: 'Travel to', rest: 'Take shelter at', hunt: 'Hunt the bearer at', destroy: 'Destroy the Ring at' };
+    const detail = a => a.cost > 0 ? `+${a.cost} corruption` : a.cost < 0 ? `Recover ${-a.cost} corruption` : 'No corruption';
+    const fatal = a => a.kind === 'travel' && c.pressure + a.cost >= C.CORRUPTION;
+    showModal({
+      title: 'Ring Quest', sub: `The bearer is at ${esc(D.TERR[C.current(c)].name)} · Corruption ${c.pressure}/${C.CORRUPTION}`,
+      body: `<div class="ring-orders">${actions.map((a, i) => `<button class="btn ${a.kind === 'destroy' ? 'gold' : fatal(a) ? 'red' : ''}" data-ring-order="${i}">
+        <strong>${labels[a.kind]} ${esc(D.TERR[a.t].name)}</strong>
+        <span>${detail(a)}${fatal(a) ? ' · the bearer will fall' : ''}</span></button>`).join('')}</div>`,
+      buttons: [
+        { label: 'Back to map', onClick: closeModal },
+        { label: 'End turn', onClick: () => { closeModal(); clearSel(); endTurnHuman(); } },
+      ],
+    });
+    $('#modal').querySelectorAll('[data-ring-order]').forEach(el => el.onclick = () => {
+      const { kind, t } = actions[+el.dataset.ringOrder];
+      if (!isHumanTurn() || !GM.ringAction(kind, t)) return;
+      closeModal();
+      selectInfo(t);
+      VW().focus(t);
+      SFX.march();
+    });
   }
 
   function endTurnHuman() {
@@ -590,7 +691,15 @@
         if (S.reinforcements > 0) { const plan = AI.planReinforce(S.current, S.reinforcements); plan.forEach(([t, n]) => { const k = GM.place(t, n); if (k) { VW().ring(t, '#ffe08a'); VW().floatText(t, '+' + k, '#ffe08a'); } }); SFX.thud(); refresh(); return; }
         GM.endReinforce(); clearSel(); SFX.clash(); break;
       case 'attack': hideBattle(); GM.endAttack(); clearSel(); break;
-      case 'fortify': clearSel(); endTurnHuman(); break;
+      case 'fortify':
+        if (C.ringActions(S).length) openRingOrders();
+        else if (GM.marchConvoy()) {
+          const t = C.current(S.campaign);
+          SFX.march();
+          selectInfo(t);
+          VW().focus(t);
+        } else { clearSel(); endTurnHuman(); }
+        break;
     }
     refresh();
   }
@@ -603,7 +712,8 @@
     renderFactions(); renderDossier(); renderFooter();
     $('#roundNum').textContent = String(S.round).padStart(2, '0');
     const viewer = viewerPlayer();
-    const nc = viewer ? viewer.cards.length : 0; const b = $('#cardBadge'); b.hidden = !nc; b.textContent = nc;
+    const nc = viewer ? viewer.cards.length + (S.campaign?.hands[viewer.idx].length || 0) : 0;
+    const b = $('#cardBadge'); b.hidden = !nc; b.textContent = nc;
     $('#objText').innerHTML = objectiveText(viewer);
     VW().invalidate && VW().invalidate();
     if (U.battle && !U.battle.ai) updateBattleUI();
@@ -632,12 +742,31 @@
   }
   function objectiveText(viewer) {
     const S = GM.S;
+    if (S.campaign) {
+      const c = S.campaign;
+      if (c.ring) {
+        const role = viewer ? c.teams[viewer.idx] : null;
+        let goal = role === 1 ? 'Hunt the bearer before the Ring is destroyed.' : 'Carry the Ring to Mount Doom and destroy it.';
+        if (role === 0 && C.current(c) === C.RING_DESTINATION && !c.ring.destroyed) {
+          goal = c.teams[S.owner[C.RING_DESTINATION]] === 1 && c.pressure > C.CORRUPTION / 2
+            ? 'Take Mount Doom so the bearer can destroy the Ring.'
+            : 'Use a quest order to destroy the Ring at Mount Doom.';
+        }
+        return `Ring-bearer at <b>${esc(D.TERR[C.current(c)].name)}</b><br>${goal}<br>Corruption ${c.pressure}/${C.CORRUPTION} · deadline round ${C.RING_LIMIT}`;
+      }
+      const progress = `<b>${esc(D.TERR[C.current(c)].name)}</b> · ${c.step + 1}/${C.ROUTE.length}<br>`;
+      if (!c.teams) return progress + 'Control the next waypoint as the convoy arrives to earn influence.';
+      const role = viewer ? c.teams[viewer.idx] : null;
+      const goal = role === 0 ? 'Deliver the convoy to Harondor.' : role === 1 ? 'Capture the convoy or delay it past the deadline.' : 'Escort the convoy to Harondor or intercept it.';
+      return progress + goal + `<br>Pressure ${c.pressure}/${C.PRESSURE} · deadline round ${C.LIMIT}`;
+    }
+    if (S.bastions) return `Earn one renown per bastion at the end of each round. Highest ${S.bastions.teams ? 'team ' : ''}renown after <b>${S.bastions.rounds} rounds</b> wins.`;
     if (S.cfg.mode === 'quick') return `Hold <b>${S.cfg.quickTarget}</b> territories, or more than anyone else when round ${S.cfg.quickRounds} ends.`;
     if (S.cfg.mode === 'missions') {
       if (!viewer) return '<i>The other realms keep their missions secret.</i>';
       return `<span class="hint" style="font-style:normal">Secret mission (${esc(viewer.short)}):</span><br>${esc(GM.missionText(viewer.mission, S.players))}`;
     }
-    return 'Conquer all of Middle-earth: eliminate every rival realm.';
+    return 'Conquer all of Middle-earth, including any neutral territories.';
   }
 
   let facKey = '';
@@ -657,6 +786,14 @@
       const nt = GM.countTerr(p.idx), na = GM.countArmies(p.idx), cur = S.current === p.idx && S.phase !== 'over';
       let who = p.neutral ? 'Neutral army' : p.isAI ? ({ easy: 'AI · Recruit', normal: 'AI · Captain', hard: 'AI · Warlord' }[p.diff]) : (p.pname ? esc(p.pname) + (p.cid === NET.cid && NET.on() ? ' · you' : '') : 'Human');
       if (!p.alive) who = 'Wiped out'; else if (cur && !isHumanTurn()) who += '<span class="think"><i></i><i></i><i></i></span>';
+      if (S.bastions && !p.neutral) {
+        const team = S.bastions.teams ? D.TEAM_NAMES[S.bastions.teams[p.idx]] + ' · ' : '';
+        who += `<div class="bastion-score">${team}${S.bastions.points[p.idx]} renown</div>`;
+      }
+      if (S.campaign) {
+        const c = S.campaign;
+        who += `<div class="bastion-score">${c.teams ? C.teamNames(c.format)[c.teams[p.idx]] : c.points[p.idx] + ' influence'} · ${c.hands[p.idx].length} adventure</div>`;
+      }
       el.classList.toggle('cur', cur); el.classList.toggle('dead', !p.alive);
       const w = el.querySelector('.who'); if (w.dataset.h !== who) { w.dataset.h = who; w.innerHTML = who; }
       const vals = p.neutral ? [na, nt] : [na, nt, p.cards.length];
@@ -689,6 +826,14 @@
     }
     else if (ph === 'attack') { st = S.pending ? 'Choose how many armies occupy the territory.' : U.hl.src >= 0 ? `Attacking from <b>${esc(D.TERR[U.hl.src].name)}</b>: pick an enemy neighbour.` : 'Pick one of your territories with 2+ armies, then an enemy neighbour.'; label = 'End attack'; dis = !!S.pending; }
     else if (ph === 'fortify') { st = S.cfg.fortify === 'connected' ? 'Optional fortify: move armies once between connected territories.' : 'Optional fortify: move armies once to an adjacent territory.'; label = 'End turn'; }
+    if (human && GM.canMarchConvoy()) {
+      st = `The convoy can advance to <b>${esc(D.TERR[C.next(S.campaign)].name)}</b>.`;
+      label = 'March convoy';
+    }
+    if (human && C.ringActions(S).length) {
+      st = 'Choose the next order for the Ring quest.';
+      label = 'Ring quest';
+    }
     const stEl = $('#status'); if (stEl.dataset.h !== st) { stEl.dataset.h = st; stEl.innerHTML = st; }
     lab.textContent = label; btn.disabled = dis;
     // the gold button asks for attention when nothing else is required of the player
@@ -701,7 +846,7 @@
     const act = new Set();
     if (human && !U.busy && U.hl.src < 0 && !S.pending) {
       const me = S.current;
-      if (ph === 'attack') { for (let t = 0; t < NT; t++) if (S.owner[t] === me && S.armies[t] >= 2 && D.TERR[t].adj.some(b => S.owner[b] !== me)) act.add(t); }
+      if (ph === 'attack') { for (let t = 0; t < NT; t++) if (D.TERR[t].adj.some(b => GM.canAttack(t, b))) act.add(t); }
       else if (ph === 'fortify' && !S.fortified) { for (let t = 0; t < NT; t++) if (S.owner[t] === me && S.armies[t] >= 2 && GM.fortifyTargets(t).length) act.add(t); }
     }
     VW().actionable = act;
@@ -719,14 +864,18 @@
         html += `<div class="box"><h3>${ICON.troops}Reinforcements</h3><div class="reinf">
           <div><span>${r.terr} territories ÷ 3 (min. 3)</span><b>${r.base}</b></div>
           ${r.regions.map(x => `<div><span>${esc(x.name)}</span><b>+${x.bonus}</b></div>`).join('')}
+          ${(r.garrisons || []).map(t => `<div><span>${esc(D.TERR[t].name)} garrison</span><b>+1 placed</b></div>`).join('')}
           ${S.tradeCount && S.reinforcements + 0 > r.total ? '' : ''}
           <div class="tot"><span>To place</span><b>${S.reinforcements}</b></div></div></div>`;
       }
       html += `<div class="box"><h3>${ICON.region}Current phase</h3><p class="hint">${phaseHelp(S.phase)}</p></div>`;
       if (human && S.phase === 'reinforce') html += `<button class="btn block" id="dCards">${ICON.cards}View my cards (${p.cards.length})</button>`;
+      if (S.campaign) html += `<button class="btn block" id="dConvoy">${ICON.flag}${S.campaign.ring ? 'Locate Ring-bearer' : 'Locate convoy'}</button>`;
       html += regionsMini();
       box.innerHTML = html;
       const dc = $('#dCards'); if (dc) dc.onclick = () => openCards(GM.mustTrade());
+      const convoy = $('#dConvoy');
+      if (convoy) convoy.onclick = () => { const t = C.current(S.campaign); selectInfo(t); VW().focus(t); };
       bindRegionHover(box);
       return;
     }
@@ -735,24 +884,26 @@
     const reg = D.REGIONS[T.region]; const rts = GM.REGION_T[T.region];
     const ownRegion = op ? rts.filter(x => S.owner[x] === o).length : 0;
     const me = S.current, own = o === me;
+    const c = S.campaign;
     let actions = '';
     if (human) {
       const canR = S.phase === 'reinforce' && own && S.reinforcements > 0 && !GM.mustTrade();
-      const canA = S.phase === 'attack' && !S.pending && ((own && S.armies[t] >= 2) || (!own && U.hl.src >= 0 && D.TERR[U.hl.src].adj.includes(t)));
+      const canA = S.phase === 'attack' && !S.pending && (own ? T.adj.some(b => GM.canAttack(t, b)) : U.hl.src >= 0 && GM.canAttack(U.hl.src, t));
       const canM = S.phase === 'fortify' && !S.fortified && own && S.armies[t] >= 2 && GM.fortifyTargets(t).length;
       actions = `<div class="btngrid">
         <div class="row"><button class="btn ${canR ? '' : ''}" id="aR" ${canR ? '' : 'disabled'} style="flex:2">${ICON.plus}Reinforce</button>
           <button class="btn sm" id="aR5" ${canR ? '' : 'disabled'}>+5</button><button class="btn sm" id="aRA" ${canR ? '' : 'disabled'}>All</button>
           ${S.phase === 'reinforce' && S.placed && S.placed[t] ? `<button class="btn sm" id="aU" title="Undo">${ICON.undo}</button>` : ''}</div>
         <button class="btn ${canA ? 'gold' : ''}" id="aA" ${canA ? '' : 'disabled'}>${ICON.swords}Attack</button>
-        <button class="btn" id="aM" ${canM ? '' : 'disabled'}>${ICON.move}Move</button></div>`;
+        <button class="btn" id="aM" ${canM ? '' : 'disabled'}>${ICON.move}Move</button>
+        ${c && own && GM.canMoveCommander(t) ? `<button class="btn" id="aCommand">${ICON.flag}Move commander here</button>` : ''}</div>`;
     }
     let nb = '';
     const showOdds = S.phase === 'attack' && own && S.armies[t] >= 2;
     nb = T.adj.map(a => {
       const ao = S.owner[a]; const ap = ao >= 0 ? S.players[ao] : null;
-      const enemy = ao !== o;
-      const pct = showOdds && enemy ? `<span class="pct">${Math.round(AI.winP(S.armies[t] - 1, S.armies[a]) * 100)}%</span>` : '';
+      const enemy = GM.enemyTerritory(a, me);
+      const pct = showOdds && enemy ? `<span class="pct">${Math.round(AI.winP(S.armies[t] - 1, S.armies[a], GM.defenceBonus(a)) * 100)}%</span>` : '';
       return `<button class="chip ${showOdds && enemy ? 'atk' : ''}" data-t="${a}"><i style="background:${ap ? ap.color : '#555'}"></i>${esc(D.TERR[a].name)} · ${S.armies[a]}${pct}</button>`;
     }).join('');
     box.innerHTML = `
@@ -761,17 +912,24 @@
       <div class="stats">
         <div class="stat"><span>${ICON.troops}Armies</span><b>${S.armies[t]}</b></div>
         <div class="stat"><span>${ICON.tower}Defence</span><b>${Math.min(2, Math.max(1, S.armies[t]))} ${S.armies[t] >= 2 ? 'dice' : 'die'}</b></div>
+        ${GM.isBastion(t) ? `<div class="stat bastion-stat"><span>${ICON.tower}Bastion</span><b>+1 highest die</b></div>
+        <p class="hint">${op?.neutral ? 'Neutral garrison.' : op && GM.suppliedBastions(o).includes(t) ? 'Supplied · gains one army each turn.' : 'Connect to another bastion through the same realm to gain a garrison.'}</p>` : ''}
       </div>
       <div class="hint" style="font-style:normal">${op ? `<span style="color:${op.light}">■</span> ${esc(op.fname)}` : 'Unclaimed'}</div>
+      ${c && (C.isWaypoint(t, c) || c.commanders[o] === t) ? `<div class="convoy-status">
+        ${C.isWaypoint(t, c) ? `<span>${t === C.current(c) ? (c.ring ? 'Ring-bearer here' : 'Convoy here') : C.onward(c).includes(t) ? 'Next waypoint' : c.ring ? 'Ring route' : 'Waypoint ' + (C.ROUTE.indexOf(t) + 1)}</span>` : ''}
+        ${c.ring && C.SANCTUARIES.has(t) ? '<span>Shelter</span>' : ''}
+        ${c.commanders[o] === t ? '<span>Commander stationed</span>' : ''}</div>` : ''}
       ${actions}
       <details class="border-list" ${showOdds ? 'open' : ''}><summary>Borders · ${T.adj.length}${showOdds ? ' · conquest odds' : ''}</summary><div class="nbrs">${nb}</div></details>`;
     G.VIGNETTE.paint($('#vig'), T);
     box.querySelectorAll('.chip').forEach(c => c.onclick = () => {
       const a = +c.dataset.t;
-      if (showOdds && S.owner[a] !== me && isHumanTurn()) openBattle(t, a);
+      if (showOdds && GM.canAttack(t, a) && isHumanTurn()) openBattle(t, a);
       else { setHL({ sel: a }); VW().focus && VW().focus(a); refresh(); }
     });
     const bind = (id, fn) => { const e = $(id); if (e) e.onclick = fn; };
+    bind('#aCommand', () => { if (GM.moveCommander(t)) { VW().ring(t, '#ffe8a8'); SFX.march(); } });
     bind('#aR', () => { const k = GM.place(t, 1); if (k) { VW().ring(t, '#ffe08a'); VW().floatText(t, '+1', '#ffe08a'); SFX.thud(); } refresh(); });
     bind('#aR5', () => { const k = GM.place(t, 5); if (k) { VW().ring(t, '#ffe08a'); VW().floatText(t, '+' + k, '#ffe08a'); SFX.thud(); } refresh(); });
     bind('#aRA', () => { const k = GM.place(t, S.reinforcements); if (k) { VW().ring(t, '#ffe08a'); VW().floatText(t, '+' + k, '#ffe08a'); SFX.thud(); } refresh(); });
@@ -804,7 +962,12 @@
   /* ---------------- cards ---------------- */
   function openCards(forced) {
     const S = GM.S; const viewer = viewerPlayer();
-    if (!viewer) { showModal({ title: 'Cards', sub: 'Rival realms keep their cards hidden.', body: '', buttons: [{ label: 'Close', onClick: closeModal }] }); return; }
+    if (!viewer) {
+      const buttons = S.campaign ? [{ label: 'Adventure deck', onClick: () => openAdventure(true) }] : [];
+      buttons.push({ label: 'Close', onClick: closeModal });
+      showModal({ title: 'Cards', sub: 'Rival realms keep their cards hidden.', body: '', buttons });
+      return;
+    }
     const canTrade = isHumanTurn() && viewer === curP() && S.phase === 'reinforce';
     const selIdx = new Set(); let dealt = false;
     const body = document.createElement('div');
@@ -837,13 +1000,104 @@
           if (forced && !GM.mustTrade()) { closeModal(); return; }
           render(); upd();
         } }] : []),
+        ...(S.campaign && !forced ? [{ label: 'Adventure cards', onClick: () => openAdventure() }] : []),
         { label: forced ? 'Continue' : 'Close', id: 'cClose', onClick: () => { if (forced && GM.mustTrade()) return; closeModal(); } },
       ],
     });
     render(); upd();
   }
 
+  function openAdventure(catalog = false) {
+    const S = GM.S, c = S.campaign, viewer = viewerPlayer();
+    if (!c) return;
+    const hand = viewer ? c.hands[viewer.idx] : [];
+    const canAct = isHumanTurn() && viewer === curP() && !S.pending && !GM.mustTrade() && !S.returnToAttack &&
+      ['reinforce', 'fortify'].includes(S.phase);
+    const catalogIds = Object.keys(C.CARDS), ids = catalog ? catalogIds : hand.slice();
+    const body = document.createElement('div');
+    body.innerHTML = `<p class="hint">Earn one draw when you conquer a waypoint or attack successfully from your commander’s territory. Events resolve when drawn.</p>
+      ${!catalog && c.played && canAct ? '<p class="hint">You have played your adventure card for this turn.</p>' : ''}
+      <div class="adventure-hand">${ids.map((id, i) => {
+        const card = C.CARDS[id], targets = !catalog && canAct ? GM.adventureTargets(i) : [];
+        return `<article class="adventure-card" data-i="${i}" data-biome="${card.biome}" data-type="${card.type}">
+          <div class="adventure-kind">${card.type}</div><h3>${esc(card.name)}</h3>
+          <canvas class="card-scene" aria-hidden="true"></canvas><p>${esc(card.text)}</p>
+          ${!catalog && canAct ? `<div class="adventure-actions">
+            ${targets.length ? `<select aria-label="Territory for ${esc(card.name)}">${targets.map(t => `<option value="${t}">${esc(D.TERR[t].name)}</option>`).join('')}</select>` : ''}
+            <button class="btn sm gold play-adventure" ${targets.length ? '' : 'disabled'}>${card.type === 'Mission' ? 'Claim' : 'Play'}</button>
+            <button class="btn sm discard-adventure">Discard</button>
+          </div>` : ''}</article>`;
+      }).join('') || '<p class="hint">No adventure cards in hand.</p>'}</div>`;
+    showModal({
+      title: catalog ? 'Adventure deck' : 'Adventure cards',
+      sub: catalog ? 'Missions, events and tactics' : `${hand.length}/${C.HAND_LIMIT} cards · play up to one per turn`,
+      body, wide: true,
+      buttons: [
+        { label: 'Territory cards', onClick: () => openCards(false) },
+        { label: catalog ? 'My hand' : 'View deck', onClick: () => openAdventure(!catalog) },
+        { label: 'Close', onClick: closeModal },
+      ],
+    });
+    $('#modal .mcard').classList.add('adventure-dialog');
+    body.querySelectorAll('.adventure-card').forEach(el => {
+      const biome = el.dataset.biome, index = +el.dataset.i;
+      G.VIGNETTE.paint(el.querySelector('canvas'), { id: NT + catalogIds.indexOf(ids[index]), biome });
+      const play = el.querySelector('.play-adventure'), discard = el.querySelector('.discard-adventure');
+      if (play) play.onclick = () => {
+        const t = +el.querySelector('select').value;
+        if (isHumanTurn() && GM.playAdventure(index, t)) {
+          SFX.card();
+          toast(`Played <b>${esc(C.CARDS[ids[index]]?.name || 'adventure card')}</b> at ${esc(D.TERR[t].name)}.`);
+          openAdventure();
+        }
+      };
+      if (discard) discard.onclick = () => {
+        if (isHumanTurn() && GM.discardAdventure(index)) openAdventure();
+      };
+    });
+  }
+
   /* ---------------- other tabs ---------------- */
+  function bastionTable() {
+    const S = GM.S;
+    if (!S.bastions) return '';
+    const rows = GM.bastionStandings().map(row => {
+      const name = S.bastions.teams ? D.TEAM_NAMES[row.id] : S.players[row.id].fname;
+      return `<tr><td>${esc(name)}${row.active ? '' : ' · eliminated'}</td><td>${row.held}</td><td>${row.points}</td><td>${row.territories}</td><td>${row.armies}</td></tr>`;
+    }).join('');
+    return `<div class="box bastion-table"><h3>${ICON.tower}Bastion standings</h3>
+      <table class="st"><thead><tr><th>${S.bastions.teams ? 'League' : 'Realm'}</th><th>Bastions</th><th>Renown</th><th>Lands</th><th>Armies</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+  function campaignPanel() {
+    const S = GM.S, c = S.campaign;
+    if (!c) return '';
+    const waypoint = (t, i) => {
+      const p = S.players[S.owner[t]];
+      return `<button class="chip" data-waypoint="${t}" ${t === C.current(c) ? 'aria-current="step"' : ''}>
+        <i style="background:${p?.color || '#655742'}"></i>${i + 1}. ${esc(D.TERR[t].name)}</button>`;
+    };
+    if (c.ring) {
+      const paths = C.RING_PATHS.map((path, i) => `<div class="ring-route-group">
+        <h4>${['Through Moria', 'Through Gondor'][i]}</h4><div class="nbrs">${path.map(waypoint).join('')}</div></div>`).join('');
+      return `<div class="box convoy-panel"><h3>${ICON.flag}Ring Quest</h3>
+        <p class="hint">Bearer at ${esc(D.TERR[C.current(c)].name)} · Corruption ${c.pressure}/${C.CORRUPTION}</p>
+        <progress class="ring-corruption" max="${C.CORRUPTION}" value="${c.pressure}" aria-label="Ring corruption"></progress>${paths}</div>`;
+    }
+    const places = C.ROUTE.map(waypoint).join('');
+    const standings = c.teams ? '' : `<table class="st"><thead><tr><th>Realm</th><th>Influence</th><th>Lands</th><th>Armies</th></tr></thead>
+      <tbody>${GM.campaignStandings().map(r => `<tr><td>${esc(S.players[r.p].short)}${r.active ? '' : ' · eliminated'}</td><td>${r.points}</td><td>${r.territories}</td><td>${r.armies}</td></tr>`).join('')}</tbody></table>`;
+    return `<div class="box convoy-panel"><h3>${ICON.flag}Ember Road</h3>
+      <p class="hint">Convoy at ${esc(D.TERR[C.current(c)].name)}${C.next(c) != null ? ' · next ' + esc(D.TERR[C.next(c)].name) : ''}</p>
+      <div class="nbrs">${places}</div>${standings}</div>`;
+  }
+  function bindWaypoints(root) {
+    root.querySelectorAll('[data-waypoint]').forEach(el => el.onclick = () => {
+      const t = +el.dataset.waypoint;
+      closeModal();
+      selectInfo(t);
+      VW().focus(t);
+    });
+  }
   function openObjectives() {
     const S = GM.S; const viewer = viewerPlayer();
     const body = document.createElement('div');
@@ -852,9 +1106,10 @@
       const ow = GM.regionOwner(r.id);
       return `<div class="regrow" data-r="${r.id}"><div><b>${esc(r.name)}</b><div class="hint" style="font-size:12.5px">${ts.length} territories · ${ow >= 0 ? 'held by the ' + esc(S.players[ow].fname) : 'contested'}</div></div><span class="bn">+${r.bonus}</span><div class="regbar">${Object.entries(counts).map(([o, c]) => `<i style="width:${c / ts.length * 100}%;background:${o >= 0 ? S.players[o].color : '#555'}"></i>`).join('')}</div></div>`;
     }).join('');
-    body.innerHTML = `<div class="box" style="margin-bottom:14px"><h3>Victory condition</h3><p>${objectiveText(viewer)}</p></div><div class="regs">${rows}</div>`;
+    body.innerHTML = `<div class="box" style="margin-bottom:14px"><h3>Victory condition</h3><p>${objectiveText(viewer)}</p></div>${bastionTable()}${campaignPanel()}<div class="regs">${rows}</div>`;
     showModal({ wide: true, title: 'Objectives and regions', sub: 'Holding a whole region grants its bonus armies every turn', body, buttons: [{ label: 'Close', onClick: closeModal }] });
     bindRegionHover(body);
+    bindWaypoints(body);
   }
   function openLog() {
     const S = GM.S;
@@ -877,18 +1132,33 @@
         <li>Only from territories with 2 or more armies, and only into neighbours (dashed sea routes count as borders).</li>
         <li>Territories are neighbours if they share a border or a sea route joins them. Mountains and rivers cannot be crossed: lands divided by a mountain range are not neighbours, and lands divided by a river are neighbours only where a bridge is drawn.</li>
         <li>The attacker rolls 1, 2 or 3 dice (always one fewer than the armies there); the defender rolls 1 or 2. The highest dice are compared and the defender wins ties.</li>
-        <li>When you conquer, you must move in at least as many armies as the dice you rolled on the last attack.</li>
+        <li>When you conquer, you must move in the surviving attackers from the last roll. You can bring extra armies, but one must stay behind.</li>
         <li>If you eliminate a realm you take its cards. If that leaves you with ${R.eliminationTrade || 6} or more, you must trade in at once until you hold 4 or fewer.</li></ul>
       <h3>3 · Fortify</h3><ul>
         <li>One move at the end of the turn: armies from one of your territories to another that is connected to it through territories you hold (or only to an adjacent one, if that option is chosen), leaving at least one behind.</li>
         <li>If you conquered at least one territory this turn, you draw a card (only one per turn).</li></ul>
       <h3>Victory</h3><ul>
-        <li>Classic: eliminate every rival realm. Missions: complete your secret objective. Quick: ${D.QUICK_TARGET || 26} territories, or the most when round 12 ends.</li></ul>
+        <li>Classic requires control of the entire map. In Missions, complete your secret objective. In Quick, hold ${D.QUICK_TARGET || 26} territories or the most when round 12 ends.</li></ul>
+      <h3>Bastions</h3><ul>
+        <li>Tower markers identify the nine bastions. A bastion adds +1 to its highest defence die. If your own territory connects two or more of your bastions, each receives one army at the start of your turn.</li>
+        <li>At the end of each round you earn one renown per bastion you hold. The last surviving side wins immediately. Otherwise, after ${D.BASTION_ROUNDS} rounds the surviving side with most renown wins. Ties go to the side with more land, then more armies. If all three match, the war ends in a draw.</li>
+        <li>With four realms you can play in two teams. Allies combine renown but keep their armies, territory and cards separate. Allies cannot attack each other or use each other's land to move or supply troops.</li></ul>
+      <h3>Ember Road</h3><ul>
+        <li>In Waypoint Race the convoy advances at the end of each round. Its destination grants one influence to its owner, or two if their commander is stationed there. At Harondor, the surviving realm with most influence wins. Ties go to land, then armies. A complete tie is a draw.</li>
+        <li>Escort vs Raiders is for two or four realms. The sides begin with two waypoints at opposite ends. The escort can march once per round during fortification, or the convoy advances at round end. In either case the escort must control both waypoints and have at least two armies at the destination. An advance clears one pressure.</li>
+        <li>A raider commander stationed at the convoy's current waypoint gives the raiders one pressure at round end. Raiders win with ${C.PRESSURE} pressure or if the convoy misses round ${C.LIMIT}. Escort wins on delivery.</li>
+        <li>In either format, the last surviving side wins early. Each commander can move into one of your adjacent territories in reinforcement or fortification once per turn, independent of army movement. A commander on a waypoint rallies one army there at the start of your turn. A displaced commander is posted again on your next turn.</li>
+        <li>Each realm starts with one tactic. Conquer a waypoint or conquer from the commander's territory to earn one adventure draw at turn end. Events resolve immediately. Keep up to ${C.HAND_LIMIT} cards and play or claim one each turn during reinforcement or fortification. Discard a card from your hand to free space.</li></ul>
+      <h3>Ring Quest</h3><ul>
+        <li>The Wardens carry the Ring from the Shire to Mount Doom. During fortification they can travel or take shelter once per round. At the fork, choose Moria or Gondor. Travelling into Hunter lands adds corruption. Perilous terrain adds another point unless a Warden commander is stationed at the destination.</li>
+        <li>A Warden-held shelter removes up to two corruption, once per shelter. A Hunter commander on the Ring-bearer's territory can hunt during fortification to add two corruption, once per round for their side.</li>
+        <li>At Mount Doom the Wardens must use their next quest action to destroy the Ring. They must control the mountain or have at most ${C.CORRUPTION / 2} corruption. Hunters win when corruption reaches ${C.CORRUPTION}, all Wardens fall, or round ${C.RING_LIMIT} ends with the Ring intact.</li>
+        <li>Both sides use the same commander and adventure card rules as Ember Road.</li></ul>
       <h3>Controls</h3><ul>
         <li>Drag to pan the map, scroll or pinch to zoom, double-click to zoom in.</li>
         <li>Reinforce: click +1, Shift+click +5. Escape cancels the selection.</li>
         <li>Keyboard: Space is the main action (next step, or attack during a battle), B blitz, R retreat, 1–3 choose dice, C cards, O objectives, L chronicle, F whole map, M mute.</li></ul>`;
-    showModal({ wide: true, title: 'Rules of war', sub: 'The classic conquest rules, no shortcuts', body, buttons: [{ label: 'Close', onClick: closeModal }] });
+    showModal({ wide: true, title: 'Rules of war', body, buttons: [{ label: 'Close', onClick: closeModal }] });
   }
   function openSystemMenu() {
     const v = U.settings.vol; const body = document.createElement('div');
@@ -933,19 +1203,43 @@
 
   function onVictory(w) {
     const S = GM.S; const p = S.players[w.p];
+    const winners = w.winners || [w.p];
     if (NET.on()) { if (NET.role === 'host') NET.clearHosting(); } else store.del(SAVE_KEY);
     setTimeout(() => {
-      hideBattle(); SFX.victory();
-      const reason = { domination: 'Every rival realm has fallen.', mission: `Secret mission accomplished: ${GM.missionText(p.mission, S.players)}`, quick: `They reached ${S.cfg.quickTarget} territories.`, time: 'When the rounds ran out, they held more territories than anyone.' }[w.reason] || '';
-      const rows = S.players.map(q => `<tr class="${q.idx === p.idx ? 'win' : ''}"><td><span style="color:${q.color}">■</span> ${esc(q.fname)}</td><td>${GM.countTerr(q.idx)}</td><td>${q.stats.conquered}</td><td>${q.stats.killed}</td><td>${q.stats.died}</td><td>${q.stats.trades}</td></tr>`).join('');
+      if (!GM.S?.winner || !$('#screen-menu').hidden) return;
+      hideBattle();
+      if (p) SFX.victory();
+      const reason = {
+        domination: S.cfg.mode === 'classic' ? 'The whole map has been conquered.' : 'Every rival realm has fallen.',
+        mission: `Secret mission accomplished: ${GM.missionText(p?.mission, S.players)}`,
+        quick: `They reached ${S.cfg.quickTarget} territories.`,
+        time: 'When the rounds ran out, they held more territories than anyone.',
+        bastionDomination: 'The last side standing holds the field.',
+        renown: 'The final bastion standings decide the war.',
+        draw: 'The leading sides finished level on renown, land and armies.',
+        convoyDelivered: 'The escort delivered the convoy to Harondor.',
+        convoySeized: 'The raiders surrounded and seized the convoy.',
+        convoyDelayed: 'The convoy failed to reach Harondor before the deadline.',
+        convoyDomination: 'The last side standing has secured the road.',
+        convoyInfluence: 'The convoy reached Harondor. Influence decides the campaign.',
+        convoyDraw: 'The leading realms finished level on influence, land and armies.',
+        ringDestroyed: 'The Ring-bearer cast the Ring into the fire of Mount Doom.',
+        ringCaptured: 'The Hunters seized the Ring before it could be destroyed.',
+        ringOutlasted: 'The Ring survived past the end of the quest.',
+      }[w.reason] || '';
+      const rows = S.players.map(q => `<tr class="${winners.includes(q.idx) ? 'win' : ''}"><td><span style="color:${q.color}">■</span> ${esc(q.fname)}</td><td>${GM.countTerr(q.idx)}</td><td>${q.stats.conquered}</td><td>${q.stats.killed}</td><td>${q.stats.died}</td><td>${q.stats.trades}</td></tr>`).join('');
       recordHistory();
-      const body = `<div class="vic-shield">${shieldSVG(p, '')}</div>
+      const body = `${winners.length ? `<div class="vic-shield">${winners.map(id => shieldSVG(S.players[id], '')).join('')}</div>` : ''}
         <p style="text-align:center;font-family:var(--f-map);font-size:18px;font-style:italic">${esc(reason)}</p>${ORN}
+        ${bastionTable()}
+        ${campaignPanel()}
         <table class="st"><tr><th>Realm</th><th>Terr.</th><th>Conquests</th><th>Kills</th><th>Losses</th><th>Trade-ins</th></tr>${rows}</table>
         ${powerGraph()}
         <p class="hint" style="text-align:center">${S.round} rounds · ${S.turn} turns</p>`;
-      showModal({ wide: true, title: `Victory for the ${p.fname}!`, sub: 'Middle-earth has a new sovereign', body, buttons: [{ label: 'Admire the map', onClick: () => { closeModal(); VW().overview(); } }, { label: 'New game', cls: 'gold', onClick: () => { closeModal(); showMenu(); } }] });
-      SFX.tension(0); fireworks([p.light, p.color, '#f6dc94', '#fff3d0']);
+      showModal({ wide: true, title: p ? `Victory for the ${w.name || p.fname}!` : 'The war ends in a draw', body, buttons: [{ label: 'Admire the map', onClick: () => { closeModal(); VW().overview(); } }, { label: 'New game', cls: 'gold', onClick: () => { closeModal(); showMenu(); } }] });
+      bindWaypoints($('#modal'));
+      SFX.tension(0);
+      if (p) fireworks([p.light, p.color, '#f6dc94', '#fff3d0']);
       refresh();
     }, 900);
   }
@@ -1136,7 +1430,10 @@
     if ((!old || old.turn !== S.turn) && S.phase !== 'over') { banner(curP(), `Round ${S.round}`); recordHistory(); if (isHumanTurn()) { SFX.horn(); toast('<b>Your turn.</b>'); showFront(); } }
     if (S.winner && !(old && old.winner)) onVictory(S.winner);
     refresh(); updateNetChip();
-    if (isHumanTurn() && GM.mustTrade() && $('#modal').hidden) openCards(true);
+    if (isHumanTurn() && $('#modal').hidden) {
+      if (S.pending) openConquest();
+      else if (GM.mustTrade()) openCards(true);
+    }
     if (NET.role === 'host') proceed();
   }
   function netFx(old, S) {
@@ -1213,7 +1510,9 @@
         else if (s.taken) { who = esc(s.name || 'Player') + (i === NET.you ? ' · you' : '') + (live && pl && pl.isAI ? ' · AI is playing' : ''); dot = `<span class="netdot ${s.online ? 'on' : ''}"></span>`; }
         else who = live ? 'Computer player' : 'Open — waiting for a player…';
         const ctl = host && live && pl && pl.cid && s.kind === 'open' && pl.alive ? `<button class="btn sm" data-ai="${pl.idx}">${pl.isAI ? 'Hand back' : 'Let the AI play'}</button>` : '';
-        return `<div class="netseat">${shieldSVG(f, '')}<div style="min-width:0"><b style="font-family:var(--f-display)">${esc(f.name)}</b><div class="hint" style="font-style:normal">${dot}${who}</div></div><div>${ctl}</div></div>`;
+        const side = room.teams ? D.TEAM_NAMES[i % 2] : ['escort', 'ring'].includes(room.campaignFormat) ? C.teamNames(room.campaignFormat)[i % 2] : '';
+        const team = side ? `<div class="bastion-score">${side}</div>` : '';
+        return `<div class="netseat">${shieldSVG(f, '')}<div style="min-width:0"><b style="font-family:var(--f-display)">${esc(f.name)}</b><div class="hint" style="font-style:normal">${dot}${who}${team}</div></div><div>${ctl}</div></div>`;
       }).join('');
       body.innerHTML = `<div class="netrow"><input class="netinput" id="netLink" readonly><button class="btn sm" id="netCopy">Copy link</button></div>
         <div class="netseats">${rows}</div>

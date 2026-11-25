@@ -122,6 +122,81 @@ body { background: #17120c; }
 .mode { border-radius: 1px; background: #18120c99; padding: 12px 8px; border-color: #705737; }
 .mode span { font-size: 13px; line-height: 1.4; }
 .mode b { font-size: 13px; }
+.mode:is([data-mode="bastions"], [data-mode="campaign"]) {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 2px 12px;
+  text-align: left;
+  padding-inline: 14px;
+}
+.mode:is([data-mode="bastions"], [data-mode="campaign"]) svg { grid-row: span 2; align-self: center; width: 26px; }
+.mode:is([data-mode="bastions"], [data-mode="campaign"]) :is(b, span) { grid-column: 2; margin-top: 0; }
+.convoy-panel { margin-bottom: 14px; }
+.convoy-panel .st { margin-bottom: 0; }
+.convoy-panel .chip[aria-current="step"] { border-color: var(--gold-hi); color: var(--gold-hi); }
+.convoy-status { display: flex; flex-wrap: wrap; gap: 5px; margin: 7px 0; }
+.convoy-status span, .adventure-kind {
+  color: var(--gold-hi);
+  font: 700 10px var(--f-display);
+  letter-spacing: .05em;
+}
+.convoy-status span { padding: 4px 7px; border: 1px solid #74572f; background: #2a1d11; }
+.ring-orders { display: grid; gap: 8px; }
+.ring-orders .btn { display: grid; justify-items: start; gap: 4px; text-align: left; padding: 11px 14px; }
+.ring-orders .btn span { font: 400 14px var(--f-map); color: var(--ivory-dim); }
+.ring-orders .btn.gold span { color: #422712; }
+.ring-orders .btn.red span { color: #ffe5d3; }
+.ring-route-group { margin-top: 12px; }
+.ring-route-group h4 { margin: 0 0 6px; font-family: var(--f-display); }
+.ring-corruption { width: 100%; height: 8px; accent-color: #b44535; }
+.mcard.adventure-dialog { display: flex; flex-direction: column; overflow: hidden; }
+.adventure-dialog > :not(.mbody) { flex-shrink: 0; }
+.adventure-dialog .mbody { min-height: 0; overflow: auto; padding-right: 7px; }
+.adventure-hand {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr));
+  gap: 12px;
+}
+.adventure-card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 12px;
+  background: linear-gradient(150deg, #352616, #19110c 70%);
+  border: 1px solid #987445;
+}
+.adventure-card[data-type="Mission"] { border-color: #9d8e67; }
+.adventure-card[data-type="Event"] { border-color: #7d9270; }
+.adventure-card h3, .adventure-card p { margin: 0; }
+.adventure-card h3 { font-size: 15px; color: var(--ivory); }
+.adventure-card p { min-height: 2.6em; line-height: 1.35; }
+.adventure-card .card-scene { width: 100%; height: 104px; border: 1px solid #74572f; }
+.adventure-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.adventure-actions select { width: 100%; min-height: 30px; }
+.bastion-score { color: var(--gold-hi); font-style: normal; }
+.bastion-table { margin-bottom: 14px; overflow-x: auto; }
+.bastion-table .st { margin: 0; }
+.bastion-table .st th,
+.bastion-table .st td { padding-inline: 5px; }
+@media (max-width: 480px) {
+  .bastion-table .st th { font-size: 10px; letter-spacing: 0; }
+  .bastion-table .st td { font-size: 12px; }
+}
+.bastion-stat b { font-size: 14px; }
+.vic-shield:has(svg + svg) { display: flex; justify-content: center; gap: 12px; }
+.die-bonus {
+  position: absolute;
+  z-index: 3;
+  top: -9px;
+  right: -11px;
+  padding: 1px 4px;
+  color: #24170c;
+  background: #f0d18b;
+  border: 1px solid #53371e;
+  border-radius: 3px;
+  font: 700 11px var(--f-display);
+}
 .seat { padding: 9px; grid-template-columns: 33px 1fr 141px; }
 .seat .sn { font-size: 12px; }
 .seat.off { opacity: .6; }

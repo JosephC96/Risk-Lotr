@@ -5,6 +5,12 @@
   D.MAP_ID = M.id; D.MAP_IMAGE = M.image; D.PRINTED_LABELS = true;
   D.REGIONS = M.regions;
   D.TERR = M.territories.map(t => ({ ...t, adj: t.adj.slice(), cx: t.lx, cy: t.ly, fs: 16, ang: 0 }));
+  // One objective per region, chosen for this map's borders and routes.
+  const bastions = [4, 15, 24, 28, 19, 40, 47, 55, 58];
+  D.BASTIONS = bastions;
+  D.BASTION_ROUNDS = 8;
+  D.TEAM_NAMES = ['Dawn League', 'Dusk League'];
+  for (const id of bastions) D.TERR[id].bastion = true;
   // lands that face each other across a river with no bridge, or a mountain range: not neighbours, and the game can say why
   D.BARRIERS = {}; for (const [a, b, kind] of M.barriers || []) { D.BARRIERS[a + '-' + b] = kind; D.BARRIERS[b + '-' + a] = kind; }
   D.QUICK_TARGET = Math.ceil(D.TERR.length * 26 / 42);

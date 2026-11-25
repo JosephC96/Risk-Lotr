@@ -1,6 +1,7 @@
 /* Rules engine — classic territory-conquest rules (reinforce / attack / fortify, cards, missions) */
 (function (G) {
   const D = G.DATA;
+  const C = G.CAMPAIGN;
   const NT = D.TERR.length;
   const TERR_MISSION = Math.ceil(NT * 24 / 42), GARRISON_MISSION = Math.ceil(NT * 18 / 42);
   const listeners = {};
@@ -42,6 +43,16 @@
 
   /* ---------- setup ---------- */
   function newGame(cfg) {
+    if (cfg.mode === 'bastions' && cfg.teams && cfg.players.length !== 4) {
+      throw new Error('Bastion teams require exactly four realms.');
+    }
+    const teams = cfg.mode === 'bastions' && cfg.teams;
+    if (teams) cfg = { ...cfg, neutral: false };
+    if (cfg.mode === 'campaign') {
+      const format = C.normalizeFormat(cfg.campaignFormat);
+      if (!C.validSize(format, cfg.players.length)) throw new Error('Invalid number of realms for this campaign.');
+      cfg = { ...cfg, campaignFormat: format, neutral: false };
+    }
     const seats = cfg.players; // [{faction, type:'human'|'ai', diff}]
     const n = seats.length;
     const players = seats.map((s, i) => {
@@ -67,9 +78,20 @@
       log: [], conquered: false, fortified: false, reinforcements: 0, reinfDetail: null,
       pending: null, setupPool: [], winner: null, returnToAttack: false, lastAttack: null, history: [],
     };
+    if (cfg.mode === 'bastions') {
+      S.bastions = {
+        rounds: D.BASTION_ROUNDS,
+        points: players.map(() => 0),
+        teams: teams ? players.map(p => p.idx % 2) : null,
+      };
+    }
     const RULES = D.RULES || {};
     const start = (RULES.startArmies && RULES.startArmies[n]) || (START_ARMIES[n] || 25) + Math.max(0, Math.ceil(NT / players.length) - Math.ceil(42 / players.length));
     S.setupPool = players.map(() => start);
+    if (cfg.mode === 'campaign') {
+      S.campaign = C.create(players, cfg.campaignFormat, shuffle);
+      C.reserveAnchors(S);
+    }
     if (RULES.startCard) players.forEach(p => { if (!p.neutral) { const c = S.deck.pop(); if (c) p.cards.push(c); } });
 
     // missions
@@ -105,15 +127,14 @@
       S.phase = 'claim';
       log(`Territory claiming begins. The ${players[S.first].fname} go first.`, S.first);
     } else {
-      const ts = shuffle([...Array(NT).keys()]);
+      const ts = shuffle([...Array(NT).keys()].filter(t => S.owner[t] < 0));
+      if (S.campaign?.teams) {
+        order.sort((a, b) => S.setupPool[b] - S.setupPool[a]);
+      }
       ts.forEach((t, i) => { const p = order[i % order.length]; S.owner[t] = p; S.armies[t] = 1; S.setupPool[p]--; });
       log('The territories have been dealt at random among the realms.');
       // neutral auto places all
-      players.forEach(p => {
-        if (!p.neutral) return;
-        if (RULES.neutralPer) { S.owner.forEach((o, t) => { if (o === p.idx) S.armies[t] = RULES.neutralPer; }); S.setupPool[p.idx] = 0; }
-        else autoDistribute(p.idx);
-      });
+      players.filter(p => p.neutral).forEach(p => autoDistribute(p.idx));
       if (cfg.mode === 'quick') {
         players.forEach(p => autoDistribute(p.idx));
         beginTurns();
@@ -131,6 +152,11 @@
     if (!mine.length) { S.setupPool[pi] = 0; return; }
     const p = S.players[pi];
     if (p.neutral) {
+      if (D.RULES?.neutralPer) {
+        mine.forEach(t => { S.armies[t] = D.RULES.neutralPer; });
+        S.setupPool[pi] = 0;
+        return;
+      }
       while (S.setupPool[pi] > 0) { const t = mine[Math.floor(Math.random() * mine.length)]; S.armies[t]++; S.setupPool[pi]--; }
       return;
     }
@@ -175,7 +201,7 @@
   }
 
   function claim(t, internal) {
-    if (S.phase !== 'claim' || S.owner[t] >= 0) return false;
+    if (S.phase !== 'claim' || S.owner[t] !== -1) return false;
     const p = S.current;
     S.owner[t] = p; S.armies[t] = 1; S.setupPool[p]--;
     emit('claim', { t, p });
@@ -212,6 +238,9 @@
 
   function beginTurns() {
     S.current = S.first; S.turn = 0; S.round = 1;
+    if (S.campaign) {
+      for (const p of S.players) S.campaign.commanders[p.idx] = C.postCommander(S, p.idx);
+    }
     log('The war begins!');
     emit('setupDone');
     startTurn();
@@ -221,12 +250,43 @@
   function countTerr(p) { let n = 0; for (let i = 0; i < NT; i++) if (S.owner[i] === p) n++; return n; }
   function countArmies(p) { let n = 0; for (let i = 0; i < NT; i++) if (S.owner[i] === p) n += S.armies[i]; return n; }
   function regionOwner(r) { const ts = REGION_T[r]; const o = S.owner[ts[0]]; return ts.every(t => S.owner[t] === o) ? o : -1; }
+  function opposed(a, b) {
+    if (!(a >= 0 && b >= 0) || a === b) return false;
+    const teams = S.bastions?.teams || S.campaign?.teams;
+    return !teams || teams[a] !== teams[b];
+  }
+  function enemyTerritory(t, p = S.current) { return opposed(p, S.owner[t]); }
+  function isBastion(t) { return !!(S?.bastions && D.TERR[t]?.bastion); }
+  function defenceBonus(t) { return isBastion(t) ? 1 : 0; }
+  function heldBastions(p) { return S.bastions ? D.BASTIONS.filter(t => S.owner[t] === p) : []; }
+
+  // A bastion has supply if it can reach a second bastion over friendly land.
+  // Ally territory remains separate for supply and fortification.
+  function suppliedBastions(p) {
+    const seen = new Set(), supplied = [];
+    for (const start of heldBastions(p)) {
+      if (seen.has(start)) continue;
+      const queue = [start], connected = [];
+      seen.add(start);
+      for (let i = 0; i < queue.length; i++) {
+        const t = queue[i];
+        if (isBastion(t)) connected.push(t);
+        for (const a of D.TERR[t].adj) {
+          if (S.owner[a] !== p || seen.has(a)) continue;
+          seen.add(a);
+          queue.push(a);
+        }
+      }
+      if (connected.length > 1) supplied.push(...connected);
+    }
+    return supplied;
+  }
   function calcReinforcements(p) {
     const n = countTerr(p);
     const base = Math.max(3, Math.floor(n / 3));
     const regions = D.REGIONS.filter(r => regionOwner(r.id) === p).map(r => ({ id: r.id, name: r.name, bonus: r.bonus }));
     const total = base + regions.reduce((a, r) => a + r.bonus, 0);
-    return { terr: n, base, regions, total };
+    return { terr: n, base, regions, total, garrisons: suppliedBastions(p) };
   }
 
   function startTurn() {
@@ -235,8 +295,11 @@
     S.conquered = false; S.fortified = false; S.pending = null; S.returnToAttack = false; S.lastAttack = null;
     S.phase = 'reinforce'; S.placed = {};
     const r = calcReinforcements(S.current);
+    for (const t of r.garrisons) S.armies[t]++;
+    C?.startTurn(S, log);
     S.reinforcements = r.total; S.reinfDetail = r;
     log(`${p.fname}: ${r.total} reinforcements${r.regions.length ? ' (including ' + r.regions.map(x => x.name + ' +' + x.bonus).join(', ') + ')' : ''}.`, p.idx);
+    if (r.garrisons.length) log(`${p.fname} supply ${r.garrisons.map(t => D.TERR[t].name).join(', ')} with one army each.`, p.idx);
     emit('turnStart', { p: S.current });
     emit('change');
   }
@@ -283,7 +346,7 @@
   }
   function trade(idxs) {
     const p = S.players[S.current];
-    if (S.phase !== 'reinforce') return null;
+    if (S.phase !== 'reinforce' || new Set(idxs).size !== 3) return null;
     const cards = idxs.map(i => p.cards[i]);
     if (cards.some(c => !c) || !isSet(cards)) return null;
     const value = setValue(cards);
@@ -332,7 +395,7 @@
 
   /* ---------- combat ---------- */
   function canAttack(a, b) {
-    return S.phase === 'attack' && !S.pending && S.owner[a] === S.current && S.owner[b] !== S.current && S.armies[a] >= 2 && D.TERR[a].adj.includes(b);
+    return S.phase === 'attack' && !S.pending && S.owner[a] === S.current && enemyTerritory(b) && S.armies[a] >= 2 && D.TERR[a].adj.includes(b);
   }
   function attack(a, b, dice) {
     if (!canAttack(a, b)) return null;
@@ -342,20 +405,22 @@
     for (let i = 0; i < ad; i++) A.push(rollDie());
     for (let i = 0; i < dd; i++) Dd.push(rollDie());
     A.sort((x, y) => y - x); Dd.sort((x, y) => y - x);
+    const defence = defenceBonus(b);
     let al = 0, dl = 0; const pairs = [];
-    for (let i = 0; i < Math.min(ad, dd); i++) { const win = A[i] > Dd[i]; if (win) dl++; else al++; pairs.push(win); }
+    for (let i = 0; i < Math.min(ad, dd); i++) { const win = A[i] > Dd[i] + (i === 0 ? defence : 0); if (win) dl++; else al++; pairs.push(win); }
     const att = S.players[S.current], defIdx = S.owner[b], def = S.players[defIdx];
     S.armies[a] -= al; S.armies[b] -= dl;
     att.stats.battles++; att.stats.killed += dl; att.stats.died += al; def.stats.killed += al; def.stats.died += dl;
-    const res = { a, b, A, D: Dd, pairs, al, dl, conquered: false, attacker: S.current, defender: defIdx, eliminated: false };
+    const res = { a, b, A, D: Dd, pairs, al, dl, defence, conquered: false, attacker: S.current, defender: defIdx, eliminated: false };
     if (S.armies[b] <= 0) {
       S.owner[b] = S.current; S.armies[b] = 0;
       S.conquered = true; res.conquered = true;
       att.stats.conquered++; def.stats.lost++;
-      S.pending = { from: a, to: b, min: Math.min(ad, S.armies[a] - 1), max: S.armies[a] - 1 };
+      S.pending = { from: a, to: b, min: ad - al, max: S.armies[a] - 1, eliminated: res.eliminated };
       log(`${att.fname} conquer ${D.TERR[b].name}${def ? ' from the ' + def.fname : ''}.`, att.idx);
       if (countTerr(defIdx) === 0) {
         def.alive = false; res.eliminated = true;
+        S.pending.eliminated = true;
         const got = def.cards.length;
         att.cards.push(...def.cards); def.cards = [];
         log(`The ${def.fname} have been wiped out by the ${att.fname}!${got ? ` Their ${got} cards are taken.` : ''}`, att.idx);
@@ -363,10 +428,10 @@
         S.players.forEach(p => { if (p.mission && p.mission.type === 'destroy' && p.mission.target === defIdx && p.idx !== S.current) p.mission = { type: 'terr', n: TERR_MISSION, was: 'destroy' }; });
         emit('eliminated', { p: defIdx, by: S.current });
       }
+      if (S.campaign) C.recordConquest(S, a, b, defIdx, log);
     }
     S.lastAttack = res; S.atkSeq = (S.atkSeq || 0) + 1;
     emit('battle', res);
-    checkVictory();
     emit('change');
     return res;
   }
@@ -376,9 +441,11 @@
     S.armies[pd.from] -= n; S.armies[pd.to] += n;
     S.pending = null;
     emit('move', { from: pd.from, to: pd.to, n, conquest: true });
+    checkVictory();
     // card-overflow after eliminating a player
     const p = S.players[S.current];
-    if (!S.winner && p.cards.length >= ((D.RULES && D.RULES.eliminationTrade) || 6)) {
+    const eliminated = pd.eliminated ?? S.lastAttack?.eliminated;
+    if (!S.winner && eliminated && p.cards.length >= ((D.RULES && D.RULES.eliminationTrade) || 6)) {
       S.phase = 'reinforce'; S.reinforcements = 0; S.returnToAttack = true; S.reinfDetail = null; S.placed = {};
       log(`${p.fname} hold ${p.cards.length} cards and must trade in at once.`, p.idx);
       emit('forcedTrade');
@@ -412,18 +479,34 @@
 
   function endTurn() {
     if (S.winner) return null;
-    if (S.phase === 'reinforce' || S.pending) return null;
+    if (S.phase !== 'fortify' || S.pending) return null;
     const p = S.players[S.current];
     let card = null;
-    if (S.conquered) { card = drawCard(S.current); log(`${p.fname} earn a territory card.`, p.idx); }
+    if (S.conquered) {
+      card = drawCard(S.current);
+      if (card) log(`${p.fname} earn a territory card.`, p.idx);
+    }
+    if (S.campaign) C.draw(S, shuffle, log);
     p.stats.maxTerr = Math.max(p.stats.maxTerr, countTerr(S.current));
     emit('turnEnd', { p: S.current, card });
     // next player
     const n = S.players.length; let nx = S.current;
     for (let k = 1; k <= n; k++) { const c = (S.current + k) % n; if (S.players[c].alive && !S.players[c].neutral) { nx = c; break; } }
-    let firstAlive = nx;
-    for (let k = 0; k < n; k++) { const c = (S.first + k) % n; if (S.players[c].alive && !S.players[c].neutral) { firstAlive = c; break; } }
-    if (nx === firstAlive) S.round++;
+    const seatsTo = p => (p - S.current + n) % n || n;
+    if (seatsTo(S.first) <= seatsTo(nx)) {
+      if (S.campaign) {
+        const result = C.tick(S, log);
+        if (result) { finishCampaign(result); return card; }
+      }
+      if (S.bastions) {
+        scoreBastions();
+        if (S.round >= S.bastions.rounds) {
+          finishBastions();
+          return card;
+        }
+      }
+      S.round++;
+    }
     S.current = nx;
     if (S.cfg.mode === 'quick' && S.round > (S.cfg.quickRounds || 12)) { quickTimeUp(); return card; }
     checkVictory();
@@ -432,6 +515,67 @@
   }
 
   /* ---------- victory ---------- */
+  function campaignStandings() {
+    if (!S.campaign) return [];
+    return S.players.map(p => ({ p: p.idx, active: p.alive, points: S.campaign.points[p.idx],
+      territories: countTerr(p.idx), armies: countArmies(p.idx) }))
+      .sort((a, b) => Number(b.active) - Number(a.active) || b.points - a.points || b.territories - a.territories || b.armies - a.armies);
+  }
+  function finishCampaign({ side, reason }) {
+    const teams = S.campaign.teams;
+    const [best, second] = campaignStandings();
+    const draw = reason === 'convoyInfluence' && second?.active && best.points === second.points &&
+      best.territories === second.territories && best.armies === second.armies;
+    const winners = draw ? [] : teams ? S.players.filter(p => teams[p.idx] === side).map(p => p.idx) : [best.p];
+    const p = winners.find(id => S.players[id].alive) ?? null;
+    S.winner = { p, winners, name: teams ? C.teamNames(S.campaign.format)[side] : S.players[best.p].fname, reason: draw ? 'convoyDraw' : reason };
+    S.phase = 'over';
+    log(draw ? 'The campaign ends in a draw.' : `${S.winner.name} win the campaign!`, p);
+    emit('victory', S.winner);
+    emit('change');
+  }
+  function bastionStandings() {
+    if (!S.bastions) return [];
+    const { points, teams } = S.bastions;
+    const groups = new Map();
+    for (const p of S.players) {
+      if (p.neutral) continue;
+      const id = teams ? teams[p.idx] : p.idx;
+      if (!groups.has(id)) groups.set(id, { id, players: [], points: 0, held: 0, territories: 0, armies: 0, active: false });
+      const row = groups.get(id);
+      row.players.push(p.idx);
+      row.points += points[p.idx];
+      row.held += heldBastions(p.idx).length;
+      row.territories += countTerr(p.idx);
+      row.armies += countArmies(p.idx);
+      row.active ||= p.alive;
+    }
+    return [...groups.values()].sort((a, b) => Number(b.active) - Number(a.active) || b.points - a.points || b.territories - a.territories || b.armies - a.armies);
+  }
+
+  function scoreBastions() {
+    for (const p of S.players) {
+      if (!p.alive || p.neutral) continue;
+      const count = heldBastions(p.idx).length;
+      S.bastions.points[p.idx] += count;
+      if (count) log(`${p.fname} earn ${count} renown from their bastions.`, p.idx);
+    }
+  }
+
+  function finishBastions(reason = 'renown') {
+    const [best, second] = bastionStandings();
+    const draw = reason === 'renown' && second?.active && best.points === second.points &&
+      best.territories === second.territories && best.armies === second.armies;
+    const winners = draw ? [] : best.players;
+    const p = draw ? null : winners.find(id => S.players[id].alive);
+    const name = S.bastions.teams ? D.TEAM_NAMES[best.id] : S.players[best.id].fname;
+    S.winner = { p, winners, name, reason: draw ? 'draw' : reason };
+    S.phase = 'over';
+    log(draw ? 'The war ends in a draw.' : `${name} win the war!`, p);
+    emit('victory', S.winner);
+    emit('change');
+  }
+
   function missionDone(p) {
     const m = p.mission; if (!m) return false;
     if (m.type === 'terr') return countTerr(p.idx) >= m.n;
@@ -448,7 +592,23 @@
     if (S.winner) return S.winner;
     const alive = S.players.filter(p => p.alive && !p.neutral);
     let w = null, reason = '';
-    if (alive.length === 1) { w = alive[0]; reason = 'domination'; }
+    if (S.campaign) {
+      const teams = S.campaign.teams;
+      if (S.campaign.ring) {
+        if (!alive.some(p => teams[p.idx] === 0)) finishCampaign({ side: 1, reason: 'ringCaptured' });
+        return S.winner;
+      }
+      const sides = new Set(alive.map(p => teams ? teams[p.idx] : p.idx));
+      if (sides.size === 1) finishCampaign({ side: [...sides][0], reason: 'convoyDomination' });
+      return S.winner;
+    }
+    if (S.bastions) {
+      if (bastionStandings().filter(r => r.active).length === 1) finishBastions('bastionDomination');
+      return S.winner;
+    }
+    if (S.cfg.mode === 'classic') {
+      if (countTerr(S.current) === NT) { w = S.players[S.current]; reason = 'domination'; }
+    } else if (alive.length === 1) { w = alive[0]; reason = 'domination'; }
     else if (S.cfg.mode === 'missions') {
       const cur = S.players[S.current];
       if (cur.alive && missionDone(cur)) { w = cur; reason = 'mission'; }
@@ -456,8 +616,6 @@
       const target = S.cfg.quickTarget || D.QUICK_TARGET || 26;
       const cur = S.players[S.current];
       if (countTerr(cur.idx) >= target) { w = cur; reason = 'quick'; }
-    } else {
-      // classic: all territories (neutral may remain) — domination of all non-neutral players handled above
     }
     if (w) {
       S.winner = { p: w.idx, reason }; S.phase = 'over';
@@ -479,6 +637,37 @@
 
   /* ---------- save / load ---------- */
   function serialize() { return JSON.stringify(S); }
+  function moveCommander(t) {
+    if (!C.moveCommand(S, t, log)) return false;
+    emit('change');
+    return true;
+  }
+  function marchConvoy() {
+    if (!C.canMarch(S)) return false;
+    if (C.march(S, log)) finishCampaign({ side: 0, reason: 'convoyDelivered' });
+    else emit('change');
+    return true;
+  }
+  function ringAction(kind, t) {
+    const outcome = C.actOnRing(S, kind, t, log);
+    if (!outcome) return false;
+    if (outcome.victory) finishCampaign(outcome.victory);
+    else emit('change');
+    return true;
+  }
+  function adventureTargets(i) { return Number.isInteger(i) && !mustTrade() ? C.cardTargets(S, i, enemyTerritory) : []; }
+  function playAdventure(i, t) {
+    if (!adventureTargets(i).includes(t)) return false;
+    if (!C.playCard(S, i, t, enemyTerritory, log)) return false;
+    emit('change');
+    return true;
+  }
+  function discardAdventure(i) {
+    if (!Number.isInteger(i)) return false;
+    if (!C.discardCard(S, i, log)) return false;
+    emit('change');
+    return true;
+  }
   function restore(json) {
     const next = JSON.parse(json);
     if (!next || (next.mapId || null) !== (D.MAP_ID || null) ||
@@ -493,6 +682,9 @@
     on, emit, newGame, claim, setupPlace, setupAutoRest, place, unplace, trade, bestSet, isSet, setValue, nextTradeValue, mustTrade,
     endReinforce, canAttack, attack, moveAfterConquest, endAttack, fortifyTargets, fortify, endTurn,
     calcReinforcements, countTerr, countArmies, regionOwner, REGION_T, missionText, missionDone, serialize, restore,
+    enemyTerritory, isBastion, defenceBonus, suppliedBastions, bastionStandings,
+    campaignStandings, moveCommander, canMoveCommander: t => C.canMoveCommand(S, t), adventureTargets, playAdventure, discardAdventure,
+    marchConvoy, canMarchConvoy: () => C.canMarch(S), ringAction,
     get S() { return S; }, log,
   };
 })(window);

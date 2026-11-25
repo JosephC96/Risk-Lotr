@@ -4,6 +4,8 @@
   const D = G.DATA; const { W, H, TERR } = D; const NT = TERR.length;
   const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
   const SHIELD = new Path2D('M6 4 H94 V50 C94 84 72 104 50 117 C28 104 6 84 6 50 Z');
+  const BASTION = new Path2D('M-5 -5h2v2h2v-2h2v2h2v-2h2v3l-1 2v5h-8v-5l-1-2z');
+  const BASTION_X = -10, BASTION_Y = -16, BASTION_RADIUS = 9;
   const EMB = {}; for (const k in D.EMBLEMS) EMB[k] = new Path2D(D.EMBLEMS[k]);
   const INK = '#27241b';
   const B = {
@@ -93,12 +95,17 @@
   }
   function hit(sx, sy) {
     const scale = clamp(.35 + B.cam.z * 1.05, .5, 1.35);
+    const bastions = G.GAME.S?.bastions;
     let nearest = -1, distance = Infinity;
     for (let i = 0; i < NT; i++) {
       const [tx, ty] = toScreen(TERR[i].lx, TERR[i].ly), dx = sx - tx, dy = sy - ty;
       if (Math.abs(dx - 6 * scale) < 24 * scale && Math.abs(dy) < 16 * scale) {
         const d = dx * dx + dy * dy;
         if (d < distance) { nearest = i; distance = d; }
+      }
+      if (bastions && TERR[i].bastion) {
+        const d = (dx - BASTION_X * scale) ** 2 + (dy - BASTION_Y * scale) ** 2;
+        if (d < distance && d <= (BASTION_RADIUS * scale) ** 2) { nearest = i; distance = d; }
       }
     }
     if (nearest >= 0) return nearest;
@@ -341,6 +348,7 @@
     const life = B.life && S ? LIFE() : null;
     if (life) { life.water(ctx, view, t, dt, S); life.ground(ctx, view, t, dt, S); life.sky(ctx, view, t, dt); }
     else if (B.life && S && !(G.LIFE && world.custom)) drawLife(t, dt, S);
+    if (S?.campaign) drawConvoyRoute(S.campaign, px);
     const pulse = 0.5 + 0.5 * Math.sin(tm / 230);
     if (B.regionHi >= 0) { ctx.save(); ctx.fillStyle = 'rgba(255,236,170,0.22)'; ctx.fill(regionPaths[B.regionHi], 'evenodd'); ctx.setLineDash([10 * px, 6 * px]); ctx.lineDashOffset = -tm / 40 * px; ctx.strokeStyle = '#f2c95c'; ctx.lineWidth = 3 * px; ctx.stroke(regionPaths[B.regionHi]); ctx.restore(); }
     if (B.hover >= 0 && B.hover !== B.sel) { ctx.save(); ctx.clip(paths[B.hover], 'evenodd'); ctx.fillStyle = 'rgba(255,246,214,0.12)'; ctx.fill(paths[B.hover], 'evenodd'); ctx.strokeStyle = 'rgba(255,244,205,0.32)'; ctx.lineWidth = 16 * px; ctx.stroke(paths[B.hover]); ctx.strokeStyle = 'rgba(255,250,228,0.8)'; ctx.lineWidth = 3 * px; ctx.stroke(paths[B.hover]); ctx.restore(); }
@@ -390,6 +398,21 @@
     for (let i = 0; i < NT; i++) if (armPrev[i] !== S.armies[i]) { if (armPrev[i] != null && changed <= 8) { popT[i] = tm; popDir[i] = S.armies[i] > armPrev[i] ? 1 : -1; } armPrev[i] = S.armies[i]; }
     for (let i = 0; i < NT; i++) {
       const T = TERR[i], o = S.owner[i]; const [x, y] = toScreen(T.lx, T.ly); if (x < -40 || y < -40 || x > B.w + 40 || y > B.h + 40) continue;
+      if (S.bastions && T.bastion) {
+        ctx.save();
+        ctx.translate(x + BASTION_X * ts, y + BASTION_Y * ts);
+        ctx.scale(ts, ts);
+        ctx.fillStyle = '#291a10';
+        ctx.strokeStyle = '#f2d595';
+        ctx.lineWidth = 1.9;
+        ctx.beginPath();
+        ctx.arc(0, 0, BASTION_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#f2d595';
+        ctx.fill(BASTION);
+        ctx.restore();
+      }
       if (o < 0) { ctx.beginPath(); ctx.arc(x, y, 5 * ts, 0, 7); ctx.fillStyle = 'rgba(39,36,27,0.6)'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(240,230,196,0.9)'; ctx.stroke(); continue; }
       const st = i === B.sel || i === B.src ? 'sel' : B.targets.has(i) ? (B.targetKind === 'attack' ? 'target' : 'move') : null;
       let s = ts * (i === B.hover ? 1.09 : 1); const pf = B.fx.find(f => f.k === 'ring' && f.t === i); if (pf) { const k = (tm - pf.t0) / pf.dur; if (k >= 0 && k < 1) s *= 1 + 0.2 * Math.sin(k * Math.PI); }
@@ -398,6 +421,13 @@
       if (s !== ts || pop > 0.02) drawToken(ctx, x + 6 * s, y, s, S.players[o], S.armies[i], st, pop, popDir[i] || 0);
       else { const sp = tokenSprite(S.players[o], S.armies[i], st, spriteTs), k = ts / spriteTs; ctx.drawImage(sp.c, Math.round((x + 6 * s - sp.ox * k) * dpr) / dpr, Math.round((y - sp.oy * k) * dpr) / dpr, sp.w * k, sp.h * k); }
       if (st === 'target' || st === 'move') drawBadge(x + 6 * s + 16 * s, y - 15 * s - 2.5 * Math.sin(tm / 260 + i), s, st);
+      if (S.campaign?.commanders[o] === i) drawCampaignMarker(x - 11 * ts, y + 12 * ts, ts, '◆', S.players[o].light);
+    }
+    if (S.campaign) {
+      const at = TERR[G.CAMPAIGN.current(S.campaign)];
+      const [x, y] = toScreen(at.lx, at.ly);
+      const marker = S.campaign.ring ? (S.campaign.ring.destroyed ? '✦' : '○') : String(S.campaign.step + 1);
+      drawCampaignMarker(x + 5 * ts, y - 23 * ts, ts * 1.45, marker, '#ffe1a0');
     }
     const keep = [];
     for (const f of B.fx) {
@@ -416,6 +446,49 @@
     if (B.life) drawMotes(t, dt);
   }
   const WORLD_FX = { flash: 1, wash: 1, region: 1 };
+  function drawConvoyRoute(campaign, px) {
+    const C = G.CAMPAIGN, at = C.current(campaign), onward = C.onward(campaign);
+    const trail = campaign.ring ? campaign.ring.trail : C.ROUTE.slice(0, campaign.step + 1);
+    const edges = campaign.ring ? C.RING_EDGES : C.ROUTE.slice(1).map((b, i) => [C.ROUTE[i], b]);
+    ctx.save();
+    for (const [a, b] of edges) {
+      const lane = D.SEA_LINKS.findIndex(([p, q]) => p === a && q === b || p === b && q === a);
+      const pts = D.SHIP_ROUTES[lane]?.[0] || [];
+      const crossing = D.SEA_LINKS[lane]?.[0] === a ? pts : [...pts].reverse();
+      ctx.beginPath();
+      ctx.moveTo(TERR[a].lx, TERR[a].ly);
+      for (const [x, y] of crossing) ctx.lineTo(x, y);
+      ctx.lineTo(TERR[b].lx, TERR[b].ly);
+      ctx.setLineDash([]);
+      ctx.strokeStyle = '#301e15aa';
+      ctx.lineWidth = 4.5 * px;
+      ctx.stroke();
+      ctx.setLineDash([5 * px, 4 * px]);
+      const visited = trail.indexOf(a);
+      ctx.strokeStyle = visited >= 0 && trail[visited + 1] === b ? '#c6e0bb' : a === at && onward.includes(b) ? '#ffe3a0' : '#d2b476';
+      ctx.lineWidth = 1.9 * px;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawCampaignMarker(x, y, scale, glyph, color) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
+    ctx.fillStyle = '#2e1c10';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.7;
+    ctx.beginPath();
+    ctx.arc(0, 0, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.font = '700 11px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = color;
+    ctx.fillText(glyph, 0, 0.5);
+    ctx.restore();
+  }
   function drawBadge(x, y, s, kind) {
     const r = 8.5 * s; ctx.save(); ctx.translate(x, y);
     ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 4; ctx.shadowOffsetY = 1.5;
