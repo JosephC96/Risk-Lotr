@@ -1,3 +1,4 @@
+@charset "UTF-8";
 /* Collector's atlas: material layers shared by the game, menus and dialogs. */
 :root {
   --gold: #c5a064; --gold-hi: #f2d99c; --gold-lo: #79603b;

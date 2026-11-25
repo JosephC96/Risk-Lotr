@@ -252,6 +252,12 @@
     beginHumanOrAI(true);
   }
   function enterHUD() { const a = $('#app'); a.classList.remove('enter'); void a.offsetWidth; a.classList.add('enter'); setTimeout(() => a.classList.remove('enter'), 1600); }
+  // a land that looks next door but lies beyond a river or a mountain range: say why it cannot be reached
+  function barrierHint(from, to) {
+    const k = from >= 0 && D.BARRIERS ? D.BARRIERS[from + '-' + to] : null; if (!k) return false;
+    toast(k === 'river' ? `No bridge crosses the river between ${D.TERR[from].name} and ${D.TERR[to].name}.` : `The mountains between ${D.TERR[from].name} and ${D.TERR[to].name} cannot be crossed.`);
+    return true;
+  }
   function startMusic() { SFX.wantMusic = true; if (U.settings.sound) SFX.music(true); }
 
   /* ---------------- flow ---------------- */
@@ -363,11 +369,12 @@
           else { selectInfo(t); toast('You need at least 2 armies to attack from here.'); }
         } else if (U.hl.src >= 0 && D.TERR[U.hl.src].adj.includes(t) && S.armies[U.hl.src] >= 2) {
           openBattle(U.hl.src, t);
-        } else selectInfo(t);
+        } else { selectInfo(t); barrierHint(U.hl.src, t); }
         break;
       case 'fortify':
         if (S.fortified) { selectInfo(t); return; }
         if (own && U.hl.src >= 0 && U.hl.targets.has(t)) { openFortify(U.hl.src, t); return; }
+        if (own && U.hl.src >= 0 && U.hl.src !== t && barrierHint(U.hl.src, t)) { selectInfo(t); return; }
         if (own && S.armies[t] >= 2) { const tg = GM.fortifyTargets(t); setHL({ sel: t, src: t, targets: new Set(tg), kind: 'move', arrow: null }); refresh(); if (!tg.length) toast('You have nowhere to move to from here.'); }
         else selectInfo(t);
         break;
@@ -774,7 +781,7 @@
       claim: 'In turn, each realm claims a free territory by placing one army on it, until none are left unclaimed.',
       place: 'In turn, each realm places one army on a territory it owns until its starting armies run out.',
       reinforce: 'You receive one army for every three territories (minimum three), plus the bonus of every region you hold completely. You may trade cards before placing.',
-      attack: 'Attack from a territory with 2 or more armies into an enemy neighbour. You roll up to 3 dice, the defender up to 2. The defender wins ties.',
+      attack: 'Attack from a territory with 2 or more armies into an enemy neighbour. Rivers are crossed only at bridges and mountains only at gates. You roll up to 3 dice, the defender up to 2. The defender wins ties.',
       fortify: 'You may make one fortify move: armies from one of your territories to another. At least one must stay behind.',
       over: 'The war is over.', setup: '',
     }[ph] || '';
@@ -864,6 +871,7 @@
         <li>If a traded card shows a territory you own, you get 2 extra armies on it. With 5 or more cards you must trade.</li></ul>
       <h3>2 · Attack</h3><ul>
         <li>Only from territories with 2 or more armies, and only into neighbours (dashed sea routes count as borders).</li>
+        <li>Rivers and mountains are barriers: a river is crossed only where a bridge is drawn, a mountain range only through a gate. Any other shared border is open.</li>
         <li>The attacker rolls 1, 2 or 3 dice (always one fewer than the armies there); the defender rolls 1 or 2. The highest dice are compared and the defender wins ties.</li>
         <li>When you conquer, you must move in at least as many armies as the dice you rolled on the last attack.</li>
         <li>If you eliminate a realm you take its cards. If that leaves you with 6 or more, you must trade in at once until you hold 4 or fewer.</li></ul>

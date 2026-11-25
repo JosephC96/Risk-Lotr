@@ -5,6 +5,8 @@
   D.MAP_ID = M.id; D.MAP_IMAGE = M.image; D.PRINTED_LABELS = true;
   D.REGIONS = M.regions;
   D.TERR = M.territories.map(t => ({ ...t, adj: t.adj.slice(), cx: t.lx, cy: t.ly, fs: 16, ang: 0 }));
+  // lands that face each other across a river with no bridge, or a mountain range: not neighbours, and the game can say why
+  D.BARRIERS = {}; for (const [a, b, kind] of M.barriers || []) { D.BARRIERS[a + '-' + b] = kind; D.BARRIERS[b + '-' + a] = kind; }
   D.QUICK_TARGET = Math.ceil(D.TERR.length * 26 / 42);
   D.SEA_LINKS = M.seaLinks;
   D.RIVERS = []; D.SEA_LABELS = [];

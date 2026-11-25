@@ -12,7 +12,7 @@ tracks = sorted(f for f in os.listdir(music) if f.lower().endswith('.mp3')) if o
 
 def page(base):
     body = h2.replace('<script', f'<script>window.MUSIC = {json.dumps({"base": base, "tracks": tracks})};</script>\n<script', 1) if tracks else h2
-    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n' + body + '\n</html>'
+    return body          # index.html is a whole document already (doctype, UTF-8, viewport)
 
 
 open('play.html', 'w', encoding='utf-8', newline='\n').write(page('docs/assets/music/'))
