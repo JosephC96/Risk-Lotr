@@ -11,7 +11,7 @@
       const img = new Image(); img.onload = () => done(img); img.onerror = () => done(null); img.src = 'assets/' + file;
     });
     [citadel, atlas, scenes, shields] = await Promise.all([
-      read('citadel-engraving.png'), read('eldmar-illustrated-atlas.png'), read('territory-illustrations.png'),
+      read('citadel-engraving.png'), read(G.DATA.MAP_IMAGE || 'eldmar-illustrated-atlas.png'), read('territory-illustrations.png'),
       read('heraldic-shields.png'),
     ]);
   }
@@ -87,6 +87,7 @@
   function illustratedAtlas(ctx, world, width, height) {
     if (!atlas) return false;
     ctx.drawImage(atlas, 0, 0, width, height);
+    if (world.custom) return true; // The user's original labels, routes and ink remain untouched.
     // Gameplay geometry remains authoritative; printed borders share the hit-test paths.
     ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     ctx.strokeStyle = '#513b2588'; ctx.lineWidth = 1.1;

@@ -9,46 +9,74 @@
   const B = {
     sel: -1, src: -1, hover: -1, targets: new Set(), targetKind: null, arrow: null, regionHi: -1,
     fx: [], life: true, dirty: true, onClick: null, onHover: null, cam: { x: W / 2, y: H / 2, z: 1 }, camT: null, shakeT: null,
-    actionable: new Set(), vel: null, zoomT: null, pad: 0, padT: 0,
+    actionable: new Set(), vel: null, zoomT: null, pad: 0, padT: 0, keys: new Set(),
   };
   let cv, ctx, world, smp, statics, paths, regionPaths, tint, tintKey = '', riverPaths = [], cloudPat = null, puffs = [], clouds = [], ships = [], flocks = [], lastT = 0;
   let ownerPrev = null, armPrev = [], popT = [], popDir = [], motes = [];
   const TS = 0.7; // tint cache scale
+  const SH = G.SHEET && G.SHEET.on ? G.SHEET : null;          // the sea, border, paper and table round the user's map
+  const LIFE = () => (G.LIFE && G.LIFE.ready ? G.LIFE : null);
+  const VIEW_H = 0.52;                                        // on a wide screen the home view shows this much of the map's height
+  let mini = null, mctx = null, miniBase = null, miniOwn = null, miniOwnKey = '', miniKey = '', miniDrag = false;
 
   function init(canvas, w, staticCanvas) {
     cv = canvas; ctx = cv.getContext('2d'); world = w; statics = staticCanvas; smp = G.MAPGEN.makeSampler(world);
     paths = world.borders.terrPaths.map(p => p.path);
     regionPaths = D.REGIONS.map(r => { const p = new Path2D(); TERR.forEach((t, i) => { if (t.region === r.id) p.addPath(paths[i]); }); return p; });
     tint = document.createElement('canvas'); tint.width = Math.round(W * TS); tint.height = Math.round(H * TS);
-    buildLife();
+    if (G.LIFE && world.custom) G.LIFE.init(world, smp); else buildLife();
+    buildMini();
     resize(); window.addEventListener('resize', resize); bindInput(); requestAnimationFrame(loop);
   }
 
   /* ---------- camera ---------- */
   function resize() {
     const r = cv.parentElement.getBoundingClientRect();
-    const wasFitted = B.fitZ && Math.abs(B.cam.z - B.fitZ) < .01;
+    const wasHome = B.homeZ && Math.abs(B.cam.z - B.homeZ) < B.homeZ * 0.012;
     B.dpr = Math.min(window.devicePixelRatio || 1, 2); B.w = Math.max(50, r.width); B.h = Math.max(50, r.height);
     cv.width = Math.round(B.w * B.dpr); cv.height = Math.round(B.h * B.dpr); cv.style.width = B.w + 'px'; cv.style.height = B.h + 'px';
-    const first = !B.fitZ; B.fitZ = Math.min(B.w / W, B.h / H); B.coverZ = Math.max(B.w / W, B.h / H);
-    B.minZ = B.fitZ * 0.98; B.maxZ = Math.max(B.fitZ * 5, 1.8);
-    if (first || wasFitted) B.cam.z = home();
-    B.cam.z = clamp(B.cam.z, B.minZ, B.maxZ); clampCam(); B.dirty = true;
+    const first = !B.homeZ;
+    if (SH) {
+      // Home fills the width of the window. A tall map on a wide screen is shown closer, and the
+      // sea is carried on to the west for as far as the window needs, so there is never an empty margin.
+      const edge = SH.BAND + 24, zAll = Math.min(B.w / (W + edge * 2), B.h / (H + edge * 2));
+      let home = Math.min(B.w / (W + edge * 2), B.h / (H * VIEW_H)); if (home < zAll * 1.22) home = zAll;
+      const apron = B.w / home - W - edge * 2; SH.layout(apron < 60 ? 0 : apron); if (LIFE()) LIFE().setApron(SH.A);
+      B.bounds = SH.bounds; B.homeZ = home; B.homeX = (SH.print.x0 + SH.print.x1) / 2;
+      B.allZ = Math.min(B.w / (SH.paper.x1 - SH.paper.x0), B.h / (SH.paper.y1 - SH.paper.y0));
+    } else { B.bounds = { x0: 0, y0: 0, x1: W, y1: H }; B.homeZ = B.allZ = Math.min(B.w / W, B.h / H); B.homeX = W / 2; }
+    B.fitZ = B.homeZ; B.coverZ = Math.max(B.w / W, B.h / H);
+    B.minZ = Math.min(B.homeZ, B.allZ) * 0.98; B.maxZ = Math.max(B.homeZ * 4.2, 1.8);
+    if (first || wasHome) { B.cam.z = B.homeZ; B.cam.x = B.homeX; if (first) B.cam.y = H / 2; }
+    B.cam.z = clamp(B.cam.z, B.minZ, B.maxZ); clampCam(); sizeMini(); B.dirty = true;
   }
-  function home() { return B.fitZ; }
   // pad: screen pixels at the bottom covered by a panel (the battle table); the map makes room for it
-  function clampCam() { const c = B.cam, hw = B.w / (2 * c.z), hh = B.h / (2 * c.z), pb = B.pad / c.z; c.x = hw * 2 >= W ? W / 2 : clamp(c.x, hw, W - hw); c.y = hh * 2 - pb >= H ? H / 2 + pb / 2 : hh * 2 >= H ? clamp(c.y, H / 2, H / 2 + pb / 2) : clamp(c.y, hh, H - hh + pb); }
-  function setPad(px) { B.padT = px > 0 && B.h ? Math.min(px, B.h * 0.62) : 0; B.dirty = true; }
+  function clampCam() {
+    // room is granted for the panel's full height at once, so a pan towards it is never cut short while it slides in
+    const c = B.cam, b = B.bounds, hw = B.w / (2 * c.z), hh = B.h / (2 * c.z), pb = B.pad / c.z, pm = Math.max(B.pad, B.padT) / c.z, bw = b.x1 - b.x0, bh = b.y1 - b.y0, my = (b.y0 + b.y1) / 2;
+    c.x = hw * 2 >= bw ? (b.x0 + b.x1) / 2 : clamp(c.x, b.x0 + hw, b.x1 - hw);
+    c.y = hh * 2 - pb >= bh ? my + pb / 2 : hh * 2 >= bh ? clamp(c.y, my, my + pm / 2) : clamp(c.y, b.y0 + hh, b.y1 - hh + pm);
+  }
+  function setPad(px) { B.padT = px > 0 && B.h ? Math.min(px, B.h * 0.62) : 0; B.dirty = true; if (!B.padT && B.autoZ) { animTo({ z: B.autoZ }, 650); B.autoZ = null; } }
   const toWorld = (sx, sy) => [(sx - B.w / 2) / B.cam.z + B.cam.x, (sy - B.h / 2) / B.cam.z + B.cam.y];
   const toScreen = (x, y) => [(x - B.cam.x) * B.cam.z + B.w / 2, (y - B.cam.y) * B.cam.z + B.h / 2];
   function animTo(o, ms, ease) { B.vel = null; B.zoomT = null; B.camT = { from: { ...B.cam }, to: Object.assign({ ...B.cam }, o), t0: performance.now(), ms: ms || 550, ease: ease || 'out' }; }
-  function fit() { animTo({ x: W / 2, y: H / 2, z: home() }); }
-  // opening shot: start close on the heart of the map and pull back to the whole table
-  function intro(ms = 3200) { const z = clamp(B.fitZ * 2.4, B.minZ, B.maxZ); B.cam.z = z; B.cam.x = W * 0.58; B.cam.y = H * 0.62; clampCam(); animTo({ x: W / 2, y: H / 2, z: home() }, ms, 'inout'); return ms; }
+  // home: the working view. overview: the whole sheet lying on the table. fit: toggles between the two.
+  function goHome(keepY) { animTo({ x: B.homeX, y: keepY === true ? B.cam.y : H / 2, z: B.homeZ }); }
+  function overview() { animTo({ x: (B.bounds.x0 + B.bounds.x1) / 2, y: (B.bounds.y0 + B.bounds.y1) / 2, z: Math.min(B.allZ, B.homeZ) }); }
+  function fit() { const to = B.camT ? B.camT.to.z : B.cam.z; if (Math.abs(to - B.homeZ) < B.homeZ * 0.03 && B.allZ < B.homeZ * 0.96) overview(); else goHome(true); }
+  // opening shot: start close on the White City and pull back to the working view
+  function intro(ms = 3200) { const z = clamp(B.homeZ * 2.3, B.minZ, B.maxZ); B.cam.z = z; B.cam.x = W * 0.6; B.cam.y = H * 0.68; clampCam(); animTo({ x: B.homeX, y: H / 2, z: B.homeZ }, ms, 'inout'); return ms; }
   function focus(t) { animTo({ x: TERR[t].lx, y: TERR[t].ly }); }
   function zoomBy(f) { animTo({ z: clamp(B.cam.z * f, B.minZ, B.maxZ) }); }
   function ensureVisible(ts, bottom) {
     const m = Math.min(90, B.w * 0.16); let dx = 0, dy = 0; const mb = Math.min(B.h * 0.62, Math.max(m, bottom || 0));
+    // two lands too far apart for this zoom (an attack along a sea lane): pull back just enough to hold both
+    if (bottom && ts.length > 1) {
+      let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const t of ts) { x0 = Math.min(x0, TERR[t].lx); x1 = Math.max(x1, TERR[t].lx); y0 = Math.min(y0, TERR[t].ly); y1 = Math.max(y1, TERR[t].ly); }
+      const z = B.camT ? B.camT.to.z : B.cam.z, need = Math.min((B.w - m * 2) / Math.max(1, x1 - x0), (B.h - m - mb) / Math.max(1, y1 - y0)) * 0.9;
+      if (need < z) { const nz = clamp(need, B.minZ, z); if (!B.autoZ) B.autoZ = z; animTo({ x: (x0 + x1) / 2, y: (y0 + y1) / 2 + (mb - m) / (2 * nz), z: nz }, 650); return; }
+    }
     for (const t of ts) { const [x, y] = toScreen(TERR[t].lx, TERR[t].ly); if (x < m) dx = Math.min(dx, x - m); if (x > B.w - m) dx = Math.max(dx, x - (B.w - m)); if (y < m) dy = Math.min(dy, y - m); if (y > B.h - mb) dy = Math.max(dy, y - (B.h - mb)); }
     if (dx || dy) animTo({ x: B.cam.x + dx / B.cam.z, y: B.cam.y + dy / B.cam.z });
   }
@@ -146,10 +174,10 @@
     for (let i = 0; i < 8; i++) clouds.push({ x: rnd() * (W + 800) - 400, y: rnd() * H, s: 1.5 + rnd() * 1.4, v: 9 + rnd() * 9, k: i % 3, a: 0.34 + rnd() * 0.2 });
     const sea = ([x, y]) => smp.lab(x, y) === -1 && smp.seaD(x, y) > 5;
     const circle = (cx, cy, r, n) => Array.from({ length: n }, (_, i) => [cx + Math.cos(i / n * 6.283) * r, cy + Math.sin(i / n * 6.283) * r * 0.8]);
-    [[[[70, 330], [112, 480], [84, 650], [62, 900], [104, 1040], [44, 720], [36, 470]], 13, 1],
+    (D.SHIP_ROUTES || [[[[70, 330], [112, 480], [84, 650], [62, 900], [104, 1040], [44, 720], [36, 470]], 13, 1],
      [[[700, 1300], [780, 1245], [860, 1228], [890, 1280], [820, 1345], [720, 1352]], 9, 0.85],
      [circle(1665, 480, 30, 8), 6, 0.7],
-     [[[470, 1090], [560, 1180], [620, 1300], [520, 1352], [462, 1235]], 11, 0.95]].forEach(([pts, speed, size], k) => {
+     [[[470, 1090], [560, 1180], [620, 1300], [520, 1352], [462, 1235]], 11, 0.95]]).forEach(([pts, speed, size], k) => {
       const ok = pts.filter(sea); if (ok.length < 3) return;
       const loop = G.MAPGEN.catmull(ok.concat([ok[0]]), 8); let len = 0; const cum = [0];
       for (let i = 1; i < loop.length; i++) { len += Math.hypot(loop[i][0] - loop[i - 1][0], loop[i][1] - loop[i - 1][1]); cum.push(len); }
@@ -196,11 +224,11 @@
     // ships
     for (const s of ships) { s.d = (s.d + s.speed * dt) % s.len; const [x, y, dx] = shipAt(s); drawShip(ctx, x, y, s.size, dx < 0, t + s.ph); }
     // volcano breath and the watching spire
-    const vx = 1655, vy = 958;
+    const [vx, vy] = D.VOLCANO || [1655, 958];
     const fl = 0.7 + 0.2 * Math.sin(t * 7.3) + 0.12 * Math.sin(t * 17.1);
     let g = ctx.createRadialGradient(vx, vy, 1, vx, vy, 34); g.addColorStop(0, `rgba(255,120,40,${0.55 * fl})`); g.addColorStop(1, 'rgba(255,80,20,0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(vx, vy, 34, 0, 7); ctx.fill();
     for (let i = 0; i < 8; i++) { const ph = (t * 0.07 + i / 8) % 1; ctx.fillStyle = `rgba(52,48,44,${0.42 * (1 - ph) * Math.min(1, ph * 7)})`; ctx.beginPath(); ctx.arc(vx + ph * 46 + Math.sin(i * 2.1 + t * 0.6) * 3, vy - 6 - ph * 78, 5 + ph * 20, 0, 7); ctx.fill(); }
-    const ex = 1722, ey = 908, ep = 0.5 + 0.5 * Math.sin(t * 2.3) ** 2;
+    const [ex, ey] = D.DARK_TOWER || [1722, 908], ep = 0.5 + 0.5 * Math.sin(t * 2.3) ** 2;
     g = ctx.createRadialGradient(ex, ey, 0, ex, ey, 13); g.addColorStop(0, `rgba(255,110,40,${0.75 * ep})`); g.addColorStop(1, 'rgba(255,70,20,0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(ex, ey, 13, 0, 7); ctx.fill();
     // birds
     ctx.save(); ctx.strokeStyle = 'rgba(30,26,20,0.85)'; ctx.lineWidth = 1.15; ctx.lineCap = 'round';
@@ -228,14 +256,15 @@
   }
 
   /* ---------- frame ---------- */
-  function loop(tm) {
-    requestAnimationFrame(loop);
+  function loop(tm) { requestAnimationFrame(loop); step(tm); }
+  function step(tm) {
     const S = G.GAME.S;
     if (B.camT) { const k = clamp((tm - B.camT.t0) / B.camT.ms, 0, 1), e = B.camT.ease === 'inout' ? (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2) : 1 - Math.pow(1 - k, 3); for (const q of ['x', 'y', 'z']) B.cam[q] = B.camT.from[q] + (B.camT.to[q] - B.camT.from[q]) * e; clampCam(); if (k >= 1) B.camT = null; B.dirty = true; }
     if (B.pad !== B.padT) { B.pad += (B.padT - B.pad) * 0.16; if (Math.abs(B.pad - B.padT) < 0.6) B.pad = B.padT; clampCam(); B.dirty = true; }
-    const animating = B.fx.length || B.camT || B.vel || B.zoomT || B.sel >= 0 || B.targets.size || B.arrow || B.shakeT || B.actionable.size || (B.life && S);
+    const animating = B.fx.length || B.camT || B.vel || B.zoomT || B.keys.size || B.sel >= 0 || B.targets.size || B.arrow || B.shakeT || B.actionable.size || (B.life && S);
     if (!B.dirty && !animating) { lastT = 0; return; } B.dirty = false;
-    const dt = Math.min(0.1, lastT ? (tm - lastT) / 1000 : 0.016); lastT = tm;
+    const dt = clamp(lastT ? (tm - lastT) / 1000 : 0.016, 0, 0.1); lastT = tm;
+    if (B.keys.size) panKeys(dt);
     if (B.zoomT) { const zt = B.zoomT, nz = B.cam.z + (zt.z - B.cam.z) * (1 - Math.exp(-dt * 16)); const done = Math.abs(nz - zt.z) < zt.z * 0.002; zoomAt(zt.sx, zt.sy, done ? zt.z : nz, true); if (done) B.zoomT = null; }
     if (B.vel) { B.cam.x -= B.vel.x * dt / B.cam.z; B.cam.y -= B.vel.y * dt / B.cam.z; clampCam(); const d = Math.exp(-dt * 5.5); B.vel.x *= d; B.vel.y *= d; if (Math.hypot(B.vel.x, B.vel.y) < 12) B.vel = null; }
     const t0 = performance.now(); draw(tm, dt, S); B.ms = performance.now() - t0;
@@ -247,10 +276,15 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, B.w, B.h);
     ctx.setTransform(dpr * z, 0, 0, dpr * z, dpr * (B.w / 2 - c.x * z + sx), dpr * (B.h / 2 - c.y * z + sy));
     ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    const view = { x0: c.x - B.w / (2 * z) - 8 / z, y0: c.y - B.h / (2 * z) - 8 / z, x1: c.x + B.w / (2 * z) + 8 / z, y1: c.y + B.h / (2 * z) + 8 / z, z, home: B.homeZ };
+    if (SH) SH.drawBase(ctx, view, z, dpr);
     ctx.drawImage(statics, 0, 0, W, H);
     if (S) { rebuildTint(S); ctx.drawImage(tint, 0, 0, W, H); }
+    if (SH) SH.drawFrame(ctx);
     const px = 1 / z; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    if (B.life && S) drawLife(t, dt, S);
+    const life = B.life && S ? LIFE() : null;
+    if (life) { life.water(ctx, view, t, dt, S); life.ground(ctx, view, t, dt, S); life.sky(ctx, view, t, dt); }
+    else if (B.life && S && !(G.LIFE && world.custom)) drawLife(t, dt, S);
     const pulse = 0.5 + 0.5 * Math.sin(tm / 230);
     if (B.regionHi >= 0) { ctx.save(); ctx.fillStyle = 'rgba(255,236,170,0.22)'; ctx.fill(regionPaths[B.regionHi], 'evenodd'); ctx.setLineDash([10 * px, 6 * px]); ctx.lineDashOffset = -tm / 40 * px; ctx.strokeStyle = '#f2c95c'; ctx.lineWidth = 3 * px; ctx.stroke(regionPaths[B.regionHi]); ctx.restore(); }
     if (B.hover >= 0 && B.hover !== B.sel) { ctx.save(); ctx.clip(paths[B.hover], 'evenodd'); ctx.fillStyle = 'rgba(255,246,214,0.12)'; ctx.fill(paths[B.hover], 'evenodd'); ctx.strokeStyle = 'rgba(255,244,205,0.32)'; ctx.lineWidth = 16 * px; ctx.stroke(paths[B.hover]); ctx.strokeStyle = 'rgba(255,250,228,0.8)'; ctx.lineWidth = 3 * px; ctx.stroke(paths[B.hover]); ctx.restore(); }
@@ -277,14 +311,17 @@
       ctx.save(); ctx.shadowColor = 'rgba(255,205,90,0.95)'; ctx.shadowBlur = 18 * dpr; ctx.strokeStyle = `rgba(255,214,110,${0.75 + 0.25 * pulse})`; ctx.lineWidth = 4.5 * px; ctx.stroke(paths[s]);
       ctx.shadowBlur = 0; ctx.strokeStyle = '#fff6d8'; ctx.lineWidth = 1.4 * px; ctx.stroke(paths[s]); ctx.restore();
     }
+    // an attack or a move along a printed sea lane sails it, instead of arcing over the water
+    const sailed = B.arrow && LIFE() && S ? LIFE().invasion(ctx, view, t, B.arrow.a, B.arrow.b, B.arrow.kind, S.players[S.owner[B.arrow.a]]) : false;
+    drawMini(S);
     // ---- screen space ----
     ctx.setTransform(dpr, 0, 0, dpr, dpr * sx, dpr * sy);
-    if (B.arrow) drawArrow(tm);
+    if (B.arrow && !sailed) drawArrow(tm);
     for (const f of B.fx) if (f.k === 'move') drawMove(f, tm);
     if (!S) return;
     const ts = clamp(0.35 + z * 1.05, 0.5, 1.35);
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
-    for (let i = 0; i < NT; i++) {
+    for (let i = 0; !D.PRINTED_LABELS && i < NT; i++) {
       const T = TERR[i]; const [x, y] = toScreen(T.lx, T.ly); if (x < -90 || y < -50 || x > B.w + 90 || y > B.h + 50) continue;
       const fs = clamp(T.fs * z * 1.7, B.w < 500 ? 8 : 10.5, 25);
       ctx.save(); ctx.translate(x, y - 15 * ts - fs * 0.55); ctx.rotate(T.ang || 0); ctx.font = `italic ${fs}px ${G.ATLAS.FONT}`; if ('letterSpacing' in ctx) ctx.letterSpacing = '0.2px';
@@ -376,6 +413,48 @@
     ctx.restore();
   }
 
+  /* ---------- overview map ---------- */
+  function buildMini() {
+    if (mini || !cv.parentElement) return;
+    mini = document.createElement('canvas'); mini.id = 'minimap'; mini.className = 'off'; mini.setAttribute('role', 'img'); mini.setAttribute('aria-label', 'Overview of the whole map. Click to move the view.');
+    cv.parentElement.appendChild(mini); mctx = mini.getContext('2d'); miniBase = document.createElement('canvas'); miniOwn = document.createElement('canvas');
+    const go = e => { const r = mini.getBoundingClientRect(); B.camT = null; B.vel = null; B.zoomT = null; B.cam.x = clamp((e.clientX - r.left) / r.width, 0, 1) * W; B.cam.y = clamp((e.clientY - r.top) / r.height, 0, 1) * H; clampCam(); B.dirty = true; };
+    mini.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); miniDrag = true; go(e); try { mini.setPointerCapture(e.pointerId); } catch (err) { /* a pointer that is already gone */ } });
+    mini.addEventListener('pointermove', e => { if (miniDrag) go(e); });
+    const end = () => { miniDrag = false; }; mini.addEventListener('pointerup', end); mini.addEventListener('pointercancel', end);
+    mini.addEventListener('wheel', e => { e.preventDefault(); zoomBy(e.deltaY < 0 ? 1.2 : 1 / 1.2); }, { passive: false });
+  }
+  function sizeMini() {
+    if (!mini) return;
+    const h = Math.round(clamp(B.h * 0.36, 130, 290)), w = Math.round(h * W / H);
+    mini.style.width = w + 'px'; mini.style.height = h + 'px'; mini.width = Math.round(w * B.dpr); mini.height = Math.round(h * B.dpr);
+    miniBase.width = miniOwn.width = mini.width; miniBase.height = miniOwn.height = mini.height;
+    const c = miniBase.getContext('2d'); c.imageSmoothingQuality = 'high';
+    // step the artwork down in halves so the little map stays clean
+    let src = statics, sw = statics.width, sh = statics.height;
+    while (sw > mini.width * 2.2) { const t = document.createElement('canvas'); t.width = Math.round(sw / 2); t.height = Math.round(sh / 2); const tc = t.getContext('2d'); tc.imageSmoothingQuality = 'high'; tc.drawImage(src, 0, 0, t.width, t.height); src = t; sw = t.width; sh = t.height; }
+    c.drawImage(src, 0, 0, mini.width, mini.height);
+    cv.parentElement.style.setProperty('--mini-w', w + 'px'); miniKey = ''; miniOwnKey = '';
+  }
+  function drawMini(S) {
+    if (!mini) return;
+    const c = B.cam, vw = B.w / c.z, vh = B.h / c.z, whole = vh >= H * 0.97 && vw >= W * 0.97, hide = whole || B.padT > 0 || !S;
+    if (hide !== mini.classList.contains('off')) { mini.classList.toggle('off', hide); cv.parentElement.classList.toggle('has-mini', !hide); }
+    if (hide) return;
+    const key = tintKey.length + ':' + tintKey + '|' + Math.round(c.x) + ',' + Math.round(c.y) + ',' + c.z.toFixed(4) + '|' + B.sel; if (key === miniKey) return; miniKey = key;
+    const k = mini.width / W;
+    if (miniOwnKey !== tintKey) {
+      miniOwnKey = tintKey; const o = miniOwn.getContext('2d'); o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, miniOwn.width, miniOwn.height); o.setTransform(k, 0, 0, k, 0, 0);
+      for (let i = 0; i < NT; i++) { const ow = S.owner[i]; if (ow < 0) continue; o.globalAlpha = 0.66; o.fillStyle = S.players[ow].color; o.fill(paths[i], 'evenodd'); o.globalAlpha = 0.55; o.strokeStyle = '#1a1208'; o.lineWidth = 3; o.stroke(paths[i]); }
+    }
+    mctx.setTransform(1, 0, 0, 1, 0, 0); mctx.drawImage(miniBase, 0, 0); mctx.drawImage(miniOwn, 0, 0);
+    if (B.sel >= 0) { mctx.save(); mctx.setTransform(k, 0, 0, k, 0, 0); mctx.strokeStyle = '#fff3c4'; mctx.lineWidth = 9; mctx.stroke(paths[B.sel]); mctx.restore(); }
+    const x0 = clamp((c.x - vw / 2) * k, 0, mini.width), y0 = clamp((c.y - vh / 2) * k, 0, mini.height), x1 = clamp((c.x + vw / 2) * k, 0, mini.width), y1 = clamp((c.y + vh / 2) * k, 0, mini.height);
+    mctx.fillStyle = 'rgba(14,9,4,0.5)'; mctx.beginPath(); mctx.rect(0, 0, mini.width, mini.height); mctx.rect(x0, y0, x1 - x0, y1 - y0); mctx.fill('evenodd');
+    const lw = 1.5 * B.dpr; mctx.strokeStyle = 'rgba(20,12,4,0.9)'; mctx.lineWidth = lw * 2.2; mctx.strokeRect(x0 + lw, y0 + lw, x1 - x0 - lw * 2, y1 - y0 - lw * 2);
+    mctx.strokeStyle = '#ffe9a6'; mctx.lineWidth = lw; mctx.strokeRect(x0 + lw, y0 + lw, x1 - x0 - lw * 2, y1 - y0 - lw * 2);
+  }
+
   /* ---------- input ---------- */
   function bindInput() {
     const pts = new Map(); let drag = null, pinch = null, moved = false, trail = [];
@@ -396,12 +475,28 @@
       if (!pts.size) drag = null; cv.style.cursor = 'grab';
     };
     cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+    window.addEventListener('blur', () => { B.keys.clear(); });
     cv.addEventListener('pointerleave', () => { if (B.hover !== -1) { B.hover = -1; B.dirty = true; } B.onHover && B.onHover(-1); });
     cv.addEventListener('wheel', e => { e.preventDefault(); B.camT = null; B.vel = null; const base = B.zoomT ? B.zoomT.z : B.cam.z; B.zoomT = { z: clamp(base * Math.pow(1.0022, -e.deltaY), B.minZ, B.maxZ), sx: e.offsetX, sy: e.offsetY }; }, { passive: false });
     cv.addEventListener('dblclick', e => zoomAt(e.offsetX, e.offsetY, B.cam.z * 1.6));
   }
+  // arrow keys and WASD slide the map; the speed eases in so a tap is a nudge and a hold is a glide
+  const PAN = { arrowleft: [-1, 0], a: [-1, 0], arrowright: [1, 0], d: [1, 0], arrowup: [0, -1], w: [0, -1], arrowdown: [0, 1], s: [0, 1] };
+  let panV = 0;
+  function panKeys(dt) {
+    let dx = 0, dy = 0; for (const k of B.keys) { dx += PAN[k][0]; dy += PAN[k][1]; }
+    if (!dx && !dy) { panV = 0; return; }
+    panV = Math.min(1, panV + dt * 4.5); const v = (260 + 860 * panV) * dt / B.cam.z, n = Math.hypot(dx, dy);
+    B.camT = null; B.vel = null; B.cam.x += dx / n * v; B.cam.y += dy / n * v; clampCam(); B.dirty = true;
+  }
+  function key(e, down) {
+    const k = (e.key || '').toLowerCase(); if (!PAN[k]) return false;
+    if (!down) { B.keys.delete(k); if (!B.keys.size) panV = 0; return true; }
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    B.keys.add(k); B.dirty = true; return true;
+  }
   function zoomAt(sx, sy, nz, keep) { const [wx, wy] = toWorld(sx, sy); B.cam.z = clamp(nz, B.minZ, B.maxZ); B.cam.x = wx - (sx - B.w / 2) / B.cam.z; B.cam.y = wy - (sy - B.h / 2) / B.cam.z; clampCam(); B.dirty = true; B.camT = null; if (!keep) B.zoomT = null; }
 
-  Object.assign(B, { init, resize, hit, focus, ensureVisible, fit, zoomBy, intro, floatText, burst, ring, flash, moveFx, shake, volley, sparks, dust, impact, shock, flag, regionFx, conquest, toScreen, setPad, invalidate: () => { B.dirty = true; } });
+  Object.assign(B, { init, resize, hit, focus, ensureVisible, fit, home: goHome, overview, zoomBy, intro, step, key, floatText, burst, ring, flash, moveFx, shake, volley, sparks, dust, impact, shock, flag, regionFx, conquest, toScreen, setPad, invalidate: () => { B.dirty = true; } });
   G.BOARD = B;
 })(window);

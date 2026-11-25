@@ -55,6 +55,7 @@
 
   /* ---------- analysis: range mask, label angles ---------- */
   function prepare(world) {
+    if (world.custom) return world;
     const { GW, GH, CELL, lab } = world;
     const segs = buildSegments(); const MR = new Float32Array(GW * GH);
     for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) MR[gy * GW + gx] = rangeAt((gx + .5) * CELL, (gy + .5) * CELL, segs);

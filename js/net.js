@@ -3,7 +3,9 @@
    publishes the resulting game state. No server of our own. */
 (function (G) {
   const PEER_SRC = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
-  const PREFIX = 'mearth-wotr-';
+  const MAP_ID = G.DATA.MAP_ID;
+  const PREFIX = MAP_ID ? `mearth-wotr-${MAP_ID}-` : 'mearth-wotr-';
+  const HOST_KEY = MAP_ID ? `mearth.hosting.${MAP_ID}` : 'mearth.hosting';
   const ls = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }, del(k) { try { localStorage.removeItem(k); } catch (e) {} } };
   const uid = () => 'c' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   const newCode = () => { const a = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 5; i++) s += a[Math.floor(Math.random() * a.length)]; return s; };
@@ -43,10 +45,10 @@
   function persistHost(stateJson) {
     if (N.role !== 'host' || !N.room) return;
     if (stateJson !== undefined) N.room.state = stateJson;
-    ls.set('mearth.hosting', JSON.stringify({ code: N.code, started: N.started, room: N.room, at: Date.now() }));
+    ls.set(HOST_KEY, JSON.stringify({ code: N.code, started: N.started, room: N.room, at: Date.now() }));
   }
-  function savedHosting() { try { return JSON.parse(ls.get('mearth.hosting') || 'null'); } catch (e) { return null; } }
-  function clearHosting() { ls.del('mearth.hosting'); }
+  function savedHosting() { try { return JSON.parse(ls.get(HOST_KEY) || 'null'); } catch (e) { return null; } }
+  function clearHosting() { ls.del(HOST_KEY); }
 
   async function host(opts) {
     // opts: { cfg, seats:[{faction, kind:'host'|'open'|'ai', diff}] } for a new room, or { resume: savedHosting() }

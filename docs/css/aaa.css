@@ -296,3 +296,13 @@ table.st tr.win td { color: var(--gold-hi); font-weight: 700; }
   #screen-menu::before, .map-light::before, .map-light::after { animation: none; }
 }
 .fac .nums em { font-style: normal; }
+
+/* ---------- the table under the sheet, and the overview map ---------- */
+#mapwrap { background: #1c130b; }
+#minimap { position: absolute; left: 18px; bottom: 18px; z-index: 4; cursor: crosshair; touch-action: none; border-radius: 2px; background: #2a1c10;
+  box-shadow: 0 0 0 1px #100b07, 0 0 0 2px #c2a05f, 0 0 0 4px #2a1c10, 0 0 0 5px #8a6e43, 0 10px 26px rgba(0, 0, 0, .6);
+  transition: opacity .35s var(--ease-out), transform .35s var(--ease-out); }
+#minimap.off { opacity: 0; pointer-events: none; transform: translateY(8px); }
+.map-caption { color: #efe3c2; text-shadow: 0 1px 2px #000d, 0 0 8px #0008; transition: left .35s var(--ease-out); }
+#mapwrap.has-mini .map-caption { left: calc(var(--mini-w, 150px) + 42px); }
+@media (max-width: 560px) { #minimap { left: 12px; bottom: 12px; } #mapwrap.has-mini .map-caption { display: none; } }

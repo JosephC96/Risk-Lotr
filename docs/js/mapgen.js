@@ -176,6 +176,7 @@
 
   /* ---------------- main generation ---------------- */
   async function generate(progress) {
+    if (G.USER_MAP_RUNTIME) return G.USER_MAP_RUNTIME.generate(progress);
     const N = GW * GH;
     const L = new Float32Array(N), SP = new Float32Array(N), BA = new Float32Array(N), FO = new Float32Array(N);
     const lab = new Int16Array(N).fill(-1);
@@ -512,6 +513,7 @@
 
   /* ---------------- sampling helpers ---------------- */
   function makeSampler(world) {
+    if (world.sampler) return world.sampler;
     const { lab, SP, BA, FO, L, RIV, seaD } = world;
     const idx = (x, y) => { const gx = clamp(Math.floor(x / CELL), 0, GW - 1), gy = clamp(Math.floor(y / CELL), 0, GH - 1); return gy * GW + gx; };
     function bil(A, x, y) {

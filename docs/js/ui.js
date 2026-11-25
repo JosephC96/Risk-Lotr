@@ -5,7 +5,7 @@
   const $ = s => document.querySelector(s);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const SAVE_KEY = 'eldmar.save.v2', SET_KEY = 'eldmar.settings.v1';
+  const SAVE_KEY = D.MAP_ID ? `eldmar.save.${D.MAP_ID}` : 'eldmar.save.v2', SET_KEY = 'eldmar.settings.v1';
   const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }, del(k) { try { localStorage.removeItem(k); } catch (e) {} } };
 
   const U = {
@@ -76,7 +76,7 @@
     const world = await G.MAPGEN.generate(prog);
     G.ATLAS.prepare(world);
     await artwork;
-    const S = window.innerWidth < 900 ? 1.5 : 2;
+    const S = D.PRINTED_LABELS || window.innerWidth < 900 ? 1.5 : 2;
     const st = await G.ATLAS.paint(world, prog, S);
     U.world = world; U.staticCanvas = st.canvas;
     prog(0.97, 'Setting the war table…');
@@ -122,13 +122,13 @@
           <div class="title">
             <svg viewBox="0 0 64 64" fill="none" stroke="currentColor"><circle cx="32" cy="32" r="29" stroke-width="1.5"/><circle cx="32" cy="32" r="25.5" stroke-width="0.8"/><path d="M32 54V26M32 40l-9-7M32 36l9-7M32 31l-7-8M32 29l6-9M23 33c-5-2-8-6-8-10M41 29c4-1 8-4 9-8M25 23c-3-3-3-7-2-10M38 20c2-3 2-6 1-9M32 26c0-5 1-9 0-14" stroke-width="1.6" stroke-linecap="round"/><path d="M22 56c4-2 7-2 10-2s6 0 10 2" stroke-width="1.4"/></svg>
             <h1>MIDDLE-EARTH</h1><div class="s">THE WAR OF THE REALMS</div>
-            <p>Forty-two territories, nine regions and five peoples with a claim to the same land. Only one will rule Middle-earth.</p>
+            <p>${NT} territories, nine regions and five peoples with a claim to the same land. Only one will rule Middle-earth.</p>
           </div>
           <div class="lbl">Game mode</div>
           <div class="modes">
             ${modeCard('classic', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>', 'Classic', 'World domination: eliminate every rival realm.')}
             ${modeCard('missions', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3h9l3 3v15H6z"/><path d="M9 10h6M9 14h6"/><circle cx="16" cy="18" r="3" fill="currentColor" fill-opacity=".3"/></svg>', 'Missions', 'Each realm is dealt a secret objective.')}
-            ${modeCard('quick', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>', 'Quick', 'Hold 26 territories, or the most after 12 rounds.')}
+            ${modeCard('quick', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>', 'Quick', `Hold ${D.QUICK_TARGET || 26} territories, or the most after 12 rounds.`)}
           </div>
           <div class="lbl">Rule options</div>
           <div class="opts">
@@ -169,7 +169,7 @@
       store.set('eldmar.menu', JSON.stringify(c));
       U.settings.speed = $('#o-speed').value; U.settings.life = $('#o-life').value === 'on'; saveSettings(); applyLife();
       startGame({
-        mode, deal: c.deal, fortify: c.fortify, cardMode: c.cardMode, neutral: c.neutral, quickTarget: 26, quickRounds: 12,
+        mode, deal: c.deal, fortify: c.fortify, cardMode: c.cardMode, neutral: c.neutral, quickTarget: D.QUICK_TARGET || 26, quickRounds: 12,
         players: active.map(x => ({ faction: x.i, type: x.v === 'human' ? 'human' : 'ai', diff: x.v === 'human' ? null : x.v })),
       });
     };
@@ -183,7 +183,7 @@
       store.set('eldmar.menu', JSON.stringify(c));
       U.settings.speed = $('#o-speed').value; U.settings.life = $('#o-life').value === 'on'; saveSettings(); applyLife();
       let first = true;
-      hostOnline({ mode: c.mode, deal: c.deal, fortify: c.fortify, cardMode: c.cardMode, neutral: c.neutral, quickTarget: 26, quickRounds: 12 },
+      hostOnline({ mode: c.mode, deal: c.deal, fortify: c.fortify, cardMode: c.cardMode, neutral: c.neutral, quickTarget: D.QUICK_TARGET || 26, quickRounds: 12 },
         active.map(x => x.v === 'human' ? { faction: x.i, kind: first ? (first = false, 'host') : 'open' } : { faction: x.i, kind: 'ai', diff: x.v }));
     };
     const reo = $('#mReopen'); if (reo) reo.onclick = () => { SFX.unlock(); reopenOnline(); };
@@ -195,7 +195,7 @@
     U.suppressTurn = true; GM.newGame(cfg); U.suppressTurn = false;
     U.hist = []; U.regPrev = null;
     $('#screen-menu').hidden = true; enterHUD();
-    clearSel(); VW().resize && VW().resize(); VW().fit && VW().fit();
+    clearSel(); VW().resize && VW().resize(); VW().home && VW().home();
     refresh(true);
     SFX.ambient(true); startMusic();
     openingRoll();
@@ -331,9 +331,7 @@
     if (!p.isAI && humans().length > 1 && !fromRestore && !NET.on()) {
       showModal({ title: `${p.fname}: your turn`, sub: 'Pass the device. Your cards and mission stay hidden until you press the button.', body: `<div style="display:grid;place-items:center">${shieldSVG(p, '').replace('<svg', '<svg style="width:90px;height:106px"')}</div>`, buttons: [{ label: 'Start my turn', cls: 'gold', onClick: () => { closeModal(); refresh(); if (GM.mustTrade()) openCards(true); } }], locked: true });
     }
-    // focus camera on player's strongest front
-    const mine = S.owner.map((o, i) => o === S.current ? i : -1).filter(i => i >= 0);
-    if (mine.length && isHumanTurn()) VW().ensureVisible && VW().ensureVisible(mine.slice(0, 3));
+    if (isHumanTurn()) showFront();
   }
 
   /* ---------------- map input ---------------- */
@@ -398,6 +396,13 @@
     if (x + tip.offsetWidth > r.width - 8) x = ev.clientX - r.left - tip.offsetWidth - 12;
     if (y + tip.offsetHeight > r.height - 8) y = ev.clientY - r.top - tip.offsetHeight - 12;
     tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  }
+
+  // bring the current player's strongest border land into view
+  function showFront() {
+    const S = GM.S; if (!S || !VW().ensureVisible) return;
+    const front = S.owner.map((o, i) => o === S.current ? i : -1).filter(i => i >= 0 && D.TERR[i].adj.some(j => S.owner[j] !== S.current)).sort((a, b) => S.armies[b] - S.armies[a])[0];
+    if (front != null) VW().ensureVisible([front]);
   }
 
   /* ---------------- battle ---------------- */
@@ -866,7 +871,7 @@
         <li>One move at the end of the turn: armies from one of your territories to an adjacent one (or a connected one, depending on the option chosen), leaving at least one behind.</li>
         <li>If you conquered at least one territory this turn, you draw a card (only one per turn).</li></ul>
       <h3>Victory</h3><ul>
-        <li>Classic: eliminate every rival realm. Missions: complete your secret objective. Quick: 26 territories, or the most when round 12 ends.</li></ul>
+        <li>Classic: eliminate every rival realm. Missions: complete your secret objective. Quick: ${D.QUICK_TARGET || 26} territories, or the most when round 12 ends.</li></ul>
       <h3>Controls</h3><ul>
         <li>Drag to pan the map, scroll or pinch to zoom, double-click to zoom in.</li>
         <li>Reinforce: click +1, Shift+click +5. Escape cancels the selection.</li>
@@ -882,7 +887,7 @@
       <div class="opts">
       <div class="opt"><label for="s-speed">AI speed</label><select id="s-speed">${[['slow', 'Relaxed'], ['normal', 'Normal'], ['fast', 'Fast'], ['instant', 'Instant']].map(([k, l]) => `<option value="${k}" ${U.settings.speed === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="opt"><label for="s-life">Clouds and map animations</label><select id="s-life"><option value="on" ${U.settings.life ? 'selected' : ''}>On</option><option value="off" ${U.settings.life ? '' : 'selected'}>Off</option></select></div></div>
-      <div class="keys"><div><span>Main action</span><kbd>Space</kbd></div><div><span>Blitz · Retreat</span><span><kbd>B</kbd><kbd>R</kbd></span></div><div><span>Dice</span><span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></span></div><div><span>Cards · Objectives</span><span><kbd>C</kbd><kbd>O</kbd></span></div><div><span>Whole map · Zoom</span><span><kbd>F</kbd><kbd>+</kbd><kbd>−</kbd></span></div><div><span>Mute</span><kbd>M</kbd></div></div>`;
+      <div class="keys"><div><span>Main action</span><kbd>Space</kbd></div><div><span>Blitz · Retreat</span><span><kbd>B</kbd><kbd>R</kbd></span></div><div><span>Dice</span><span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></span></div><div><span>Cards · Objectives</span><span><kbd>C</kbd><kbd>O</kbd></span></div><div><span>Move the map</span><span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span></div><div><span>Whole map · Zoom</span><span><kbd>F</kbd><kbd>+</kbd><kbd>−</kbd></span></div><div><span>Mute</span><kbd>M</kbd></div></div>`;
     const apply = () => { U.settings.speed = $('#s-speed').value; U.settings.life = $('#s-life').value === 'on'; saveSettings(); applyLife(); };
     const buttons = [
       { label: 'Quit to main menu', onClick: () => { closeModal(); SFX.ambient(false); leaveOnline(); showMenu(); } },
@@ -907,7 +912,7 @@
         <table class="st"><tr><th>Realm</th><th>Terr.</th><th>Conquests</th><th>Kills</th><th>Losses</th><th>Trade-ins</th></tr>${rows}</table>
         ${powerGraph()}
         <p class="hint" style="text-align:center">${S.round} rounds · ${S.turn} turns</p>`;
-      showModal({ wide: true, title: `Victory for the ${p.fname}!`, sub: 'Middle-earth has a new sovereign', body, buttons: [{ label: 'Admire the map', onClick: () => { closeModal(); VW().fit(); } }, { label: 'New game', cls: 'gold', onClick: () => { closeModal(); showMenu(); } }] });
+      showModal({ wide: true, title: `Victory for the ${p.fname}!`, sub: 'Middle-earth has a new sovereign', body, buttons: [{ label: 'Admire the map', onClick: () => { closeModal(); VW().overview(); } }, { label: 'New game', cls: 'gold', onClick: () => { closeModal(); showMenu(); } }] });
       SFX.tension(0); fireworks([p.light, p.color, '#f6dc94', '#fff3d0']);
       refresh();
     }, 900);
@@ -1053,6 +1058,7 @@
       }
       if (e.ctrlKey || e.metaKey || e.altKey || !GM.S || !$('#screen-menu').hidden || !$('#modal').hidden) return;
       const tg = e.target; if (tg && /^(INPUT|SELECT|TEXTAREA)$/.test(tg.tagName)) return;
+      if (VW().key && VW().key(e, true)) { e.preventDefault(); return; }
       const k = e.key.toLowerCase(), inBattle = U.battle && !U.battle.ai;
       if (k === ' ' || k === 'enter') { if (tg && tg.tagName === 'BUTTON') return; e.preventDefault(); if (inBattle) humanAttack(false); else onNext(); }
       else if (inBattle && k === 'b') humanAttack(true);
@@ -1063,6 +1069,7 @@
       else if (k === 'c') openCards(false); else if (k === 'o') openObjectives(); else if (k === 'l') openLog(); else if (k === 'h') openRules();
       else if (k === '+' || k === '=') VW().zoomBy(1.35); else if (k === '-') VW().zoomBy(1 / 1.35);
     });
+    document.addEventListener('keyup', e => { if (VW().key) VW().key(e, false); });
     GM.on('change', () => { refresh(); netLocalChange(); });
     GM.on('turnStart', () => { if (!U.suppressTurn) onTurnStart(false); });
     GM.on('victory', onVictory);
@@ -1091,10 +1098,10 @@
     const old = S0 ? { owner: S0.owner.slice(), armies: S0.armies.slice(), turn: S0.turn, atk: S0.atkSeq || 0, winner: S0.winner } : null;
     netApplying = true; try { GM.restore(json); } finally { netApplying = false; }
     const S = GM.S; U.netLive = true; U.aiToken++; U.running = false;
-    if (!$('#screen-menu').hidden) { $('#screen-menu').hidden = true; enterHUD(); U.hist = []; U.regPrev = null; closeModal(); roomOpen = false; clearSel(); VW().resize && VW().resize(); VW().fit && VW().fit(); SFX.ambient(true); startMusic(); }
+    if (!$('#screen-menu').hidden) { $('#screen-menu').hidden = true; enterHUD(); U.hist = []; U.regPrev = null; closeModal(); roomOpen = false; clearSel(); VW().resize && VW().resize(); VW().home && VW().home(); SFX.ambient(true); startMusic(); }
     if (NET.role === 'host') NET.relay(json, from);
     if (old) netFx(old, S);
-    if ((!old || old.turn !== S.turn) && S.phase !== 'over') { banner(curP(), `Round ${S.round}`); recordHistory(); if (isHumanTurn()) { SFX.horn(); toast('<b>Your turn.</b>'); const mine = S.owner.map((o, i) => o === S.current ? i : -1).filter(i => i >= 0); if (mine.length) VW().ensureVisible(mine.slice(0, 3)); } }
+    if ((!old || old.turn !== S.turn) && S.phase !== 'over') { banner(curP(), `Round ${S.round}`); recordHistory(); if (isHumanTurn()) { SFX.horn(); toast('<b>Your turn.</b>'); showFront(); } }
     if (S.winner && !(old && old.winner)) onVictory(S.winner);
     refresh(); updateNetChip();
     if (isHumanTurn() && GM.mustTrade() && $('#modal').hidden) openCards(true);

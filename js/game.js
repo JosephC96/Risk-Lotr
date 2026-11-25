@@ -2,6 +2,7 @@
 (function (G) {
   const D = G.DATA;
   const NT = D.TERR.length;
+  const TERR_MISSION = Math.ceil(NT * 24 / 42), GARRISON_MISSION = Math.ceil(NT * 18 / 42);
   const listeners = {};
   function on(ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); }
   function emit(ev, data) { (listeners[ev] || []).forEach(f => { try { f(data); } catch (e) { console.error(e); } }); }
@@ -35,7 +36,7 @@
       const list = names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : names[0];
       return `Conquer ${list}${m.extra ? ', plus one more region of your choice' : ''}.`;
     }
-    if (m.type === 'destroy') { const p = players[m.target]; return `Destroy the ${p ? p.fname : '—'} completely. If another realm does it first, conquer 24 territories.`; }
+    if (m.type === 'destroy') { const p = players[m.target]; return `Destroy the ${p ? p.fname : '—'} completely. If another realm does it first, conquer ${TERR_MISSION} territories.`; }
     return '';
   }
 
@@ -61,17 +62,17 @@
     shuffle(deck);
 
     S = {
-      v: 1, cfg, players, owner: new Array(NT).fill(-1), armies: new Array(NT).fill(0),
+      v: 1, mapId: D.MAP_ID || null, cfg, players, owner: new Array(NT).fill(-1), armies: new Array(NT).fill(0),
       current: 0, phase: 'setup', turn: 0, round: 1, tradeCount: 0, deck, discard: [],
       log: [], conquered: false, fortified: false, reinforcements: 0, reinfDetail: null,
       pending: null, setupPool: [], winner: null, returnToAttack: false, lastAttack: null, history: [],
     };
-    const start = START_ARMIES[n] || 25;
+    const start = (START_ARMIES[n] || 25) + Math.max(0, Math.ceil(NT / players.length) - Math.ceil(42 / players.length));
     S.setupPool = players.map(() => start);
 
     // missions
     if (cfg.mode === 'missions') {
-      const pool = [{ type: 'terr', n: 24 }, { type: 'terr2', n: 18 }];
+      const pool = [{ type: 'terr', n: TERR_MISSION }, { type: 'terr2', n: GARRISON_MISSION }];
       MISSION_REGIONS.forEach(m => pool.push({ type: 'regions', regions: m.regions, extra: m.extra }));
       players.forEach(p => { if (!p.neutral) pool.push({ type: 'destroy', target: p.idx }); });
       shuffle(pool);
@@ -353,7 +354,7 @@
         att.cards.push(...def.cards); def.cards = [];
         log(`The ${def.fname} have been wiped out by the ${att.fname}!${got ? ` Their ${got} cards are taken.` : ''}`, att.idx);
         // destroy mission fallback for others
-        S.players.forEach(p => { if (p.mission && p.mission.type === 'destroy' && p.mission.target === defIdx && p.idx !== S.current) p.mission = { type: 'terr', n: 24, was: 'destroy' }; });
+        S.players.forEach(p => { if (p.mission && p.mission.type === 'destroy' && p.mission.target === defIdx && p.idx !== S.current) p.mission = { type: 'terr', n: TERR_MISSION, was: 'destroy' }; });
         emit('eliminated', { p: defIdx, by: S.current });
       }
     }
@@ -446,7 +447,7 @@
       const cur = S.players[S.current];
       if (cur.alive && missionDone(cur)) { w = cur; reason = 'mission'; }
     } else if (S.cfg.mode === 'quick') {
-      const target = S.cfg.quickTarget || 26;
+      const target = S.cfg.quickTarget || D.QUICK_TARGET || 26;
       const cur = S.players[S.current];
       if (countTerr(cur.idx) >= target) { w = cur; reason = 'quick'; }
     } else {
@@ -472,7 +473,15 @@
 
   /* ---------- save / load ---------- */
   function serialize() { return JSON.stringify(S); }
-  function restore(json) { S = JSON.parse(json); emit('change'); return S; }
+  function restore(json) {
+    const next = JSON.parse(json);
+    if (!next || (next.mapId || null) !== (D.MAP_ID || null) ||
+        !Array.isArray(next.owner) || next.owner.length !== NT ||
+        !Array.isArray(next.armies) || next.armies.length !== NT) {
+      throw new Error('This saved game belongs to a different map.');
+    }
+    S = next; emit('change'); return S;
+  }
 
   G.GAME = {
     on, emit, newGame, claim, setupPlace, setupAutoRest, place, unplace, trade, bestSet, isSet, setValue, nextTradeValue, mustTrade,
